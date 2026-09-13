@@ -1,0 +1,44 @@
+[package]
+name = "agy-orbit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Seamless Multi-Account Manager & Isolated Orbit Runner for Antigravity CLI (agy)"
+license = "MIT"
+authors = ["GX Wane <gxwane@outlook.com>"]
+
+[lib]
+name = "agy_orbit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agyo"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "cargo"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+comfy-table = "7.1"
+colored = "3.0"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6.0"
+tempfile = "3.17"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "linux-native"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
