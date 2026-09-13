@@ -33,6 +33,12 @@ pub enum OrbitError {
     #[error("Lease contention: Orbit is currently locked by PID {pid} (Orbit: {orbit})")]
     LeaseActive { pid: u32, orbit: String },
 
+    #[error("Recursive session detected: already running under Orbit '{orbit}' (Parent PID: {pid}). Nested switching is prohibited.")]
+    RecursiveSession { orbit: String, pid: String },
+
+    #[error("Credential validation failed: {0}")]
+    CredentialValidation(String),
+
     #[error("Rollback failed: {0}")]
     RollbackFailed(String),
 

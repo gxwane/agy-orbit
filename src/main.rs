@@ -2,17 +2,54 @@ use clap::Parser;
 use colored::Colorize;
 
 use agy_orbit::app::{
-    MigrationService, QueryService, RecoveryService, SnapshotService, SwitchService,
+    MigrationService, QueryService, RecoveryService, RunOptions, RunService, SnapshotService,
+    SwitchService,
 };
 use agy_orbit::cli::{Cli, Commands};
+use agy_orbit::error::Result;
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
-use agy_orbit::ui::{render_orbits_table, render_success, render_whoami};
+use agy_orbit::ui::{
+    install_terminal_panic_hook, is_interactive, render_orbits_table, render_success,
+    render_whoami, select_orbit_interactive,
+};
 
 fn main() {
+    // 0. Install panic hook to ensure terminal raw mode and cursor are always restored
+    install_terminal_panic_hook();
+
+    if let Err(err) = run_app() {
+        eprintln!("{} {}", "Error:".red().bold(), err);
+        std::process::exit(1);
+    }
+}
+
+fn run_app() -> Result<()> {
     let cli = Cli::parse();
+
+    // Guard against recursive session reentrancy for mutating commands
+    if std::env::var("AGYO_SESSION_ACTIVE").as_deref() == Ok("1") {
+        let is_mutating = matches!(
+            &cli.command,
+            Some(Commands::Save { .. })
+                | Some(Commands::Use { .. })
+                | Some(Commands::Remove { .. })
+                | Some(Commands::Run { .. })
+        );
+        if is_mutating {
+            let current_orbit = std::env::var("AGYO_SESSION_ORBIT").unwrap_or_default();
+            let pid = std::env::var("AGYO_SESSION_PID").unwrap_or_default();
+            eprintln!(
+                "{} Recursive session detected: already running under Orbit '{}' (Parent PID: {}). Nested switching is prohibited.",
+                "Error:".red().bold(),
+                current_orbit,
+                pid
+            );
+            std::process::exit(1);
+        }
+    }
 
     // 1. Storage migration check: smoothly migrate legacy ~/.gemini/profiles to ~/.agyo/
     let _ = MigrationService::auto_migrate_if_needed();
@@ -31,71 +68,53 @@ fn main() {
     }
 
     // 4. Dispatch commands to Application Services
-    let result = match cli.command {
+    match cli.command {
         Some(Commands::Save { name, label, force }) => {
             let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
-            match service.save(&name, label, force) {
-                Ok(meta) => {
-                    render_success(&format!(
-                        "Orbit '{}' ({}) successfully saved and set as active.",
-                        meta.name.to_string().bold(),
-                        meta.email.cyan()
-                    ));
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            let meta = service.save(&name, label, force)?;
+            render_success(&format!(
+                "Orbit '{}' ({}) successfully saved and set as active.",
+                meta.name.to_string().bold(),
+                meta.email.cyan()
+            ));
+            Ok(())
         }
         Some(Commands::Use { name }) => {
             let service = SwitchService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
-            match service.switch_to_orbit(&name) {
-                Ok(email) => {
-                    render_success(&format!(
-                        "Switched to orbit '{}' ({})",
-                        name.bold(),
-                        email.cyan()
-                    ));
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            let email = service.switch_to_orbit(&name)?;
+            render_success(&format!(
+                "Switched to orbit '{}' ({})",
+                name.bold(),
+                email.cyan()
+            ));
+            Ok(())
         }
         Some(Commands::List) => {
             let service = QueryService::new(&target, &storage);
-            match service.list() {
-                Ok(index) => {
-                    render_orbits_table(&index);
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            let index = service.list()?;
+            render_orbits_table(&index);
+            Ok(())
         }
         Some(Commands::Whoami) => {
             let service = QueryService::new(&target, &storage);
-            match service.whoami() {
-                Ok(status) => {
-                    render_whoami(&status);
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            let status = service.whoami()?;
+            render_whoami(&status);
+            Ok(())
         }
         Some(Commands::Remove { name }) => {
             let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
-            match service.remove(&name) {
-                Ok(()) => {
-                    render_success(&format!("Orbit '{}' has been removed.", name.bold()));
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-        Some(Commands::Run { .. }) => {
-            eprintln!(
-                "{} `agyo run` (isolated lifetime lease runner) will be available in Phase 2.",
-                "ℹ".cyan().bold()
-            );
+            service.remove(&name)?;
+            render_success(&format!("Orbit '{}' has been removed.", name.bold()));
             Ok(())
+        }
+        Some(Commands::Run { name, restore, cmd }) => {
+            let service = RunService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+            let exit_code = service.run(RunOptions {
+                orbit: name,
+                cmd,
+                restore,
+            })?;
+            std::process::exit(exit_code);
         }
         Some(Commands::Quota { .. }) => {
             eprintln!(
@@ -105,18 +124,84 @@ fn main() {
             Ok(())
         }
         None => {
-            println!("{}", "Welcome to agy-orbit (agyo)!".bold().cyan());
-            let service = QueryService::new(&target, &storage);
-            if let Ok(status) = service.whoami() {
-                render_whoami(&status);
-            }
-            println!("\nUse `agyo --help` to view all available commands.");
-            Ok(())
-        }
-    };
+            if is_interactive() {
+                let query_svc = QueryService::new(&target, &storage);
+                let index = query_svc.list()?;
+                let active = index.active_orbit.as_deref();
 
-    if let Err(err) = result {
-        eprintln!("{} {}", "Error:".red().bold(), err);
-        std::process::exit(1);
+                if index.orbits.is_empty() {
+                    println!("{}", "Welcome to agy-orbit (agyo)!".bold().cyan());
+                    if let Ok(status) = query_svc.whoami() {
+                        render_whoami(&status);
+                    }
+                    println!("\nRun `agyo save <orbit-name>` to save your current active account as an Orbit.");
+                    println!("Use `agyo --help` to view all available commands.");
+                    Ok(())
+                } else if index.orbits.len() == 1
+                    && active == Some(index.orbits.keys().next().unwrap().as_str())
+                {
+                    let single_name = index.orbits.keys().next().unwrap();
+                    render_success(&format!(
+                        "Orbit '{}' is currently active.",
+                        single_name.bold()
+                    ));
+                    println!("(Only 1 Orbit configured. Sign in to another account with 'agy', then run 'agyo save <name>' to add it.)");
+                    Ok(())
+                } else {
+                    let mut orbit_pairs: Vec<(&str, &str)> = index
+                        .orbits
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.email.as_str()))
+                        .collect();
+                    orbit_pairs.sort_by(|a, b| a.0.cmp(b.0));
+
+                    match select_orbit_interactive(&orbit_pairs, active) {
+                        Ok(Some(selected)) => {
+                            if active == Some(selected) {
+                                println!(
+                                    "Orbit '{}' is already active. No changes made.",
+                                    selected.bold()
+                                );
+                                Ok(())
+                            } else {
+                                let switch_svc = SwitchService::new(
+                                    &target,
+                                    &keyring,
+                                    vault.as_ref(),
+                                    &storage,
+                                    &lease,
+                                );
+                                let email = switch_svc.switch_to_orbit(selected)?;
+                                render_success(&format!(
+                                    "Switched to orbit '{}' ({})",
+                                    selected.bold(),
+                                    email.cyan()
+                                ));
+                                Ok(())
+                            }
+                        }
+                        Ok(None) => {
+                            // User cancelled with Esc or q
+                            Ok(())
+                        }
+                        Err(inquire::error::InquireError::OperationInterrupted) => {
+                            // User pressed Ctrl+C
+                            std::process::exit(130);
+                        }
+                        Err(e) => {
+                            eprintln!("{} TUI error: {e}", "Error:".red().bold());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            } else {
+                // Non-TTY: graceful silent degradation, output status without blocking
+                let query_svc = QueryService::new(&target, &storage);
+                if let Ok(status) = query_svc.whoami() {
+                    render_whoami(&status);
+                }
+                Ok(())
+            }
+        }
     }
 }

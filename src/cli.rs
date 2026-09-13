@@ -52,14 +52,18 @@ pub enum Commands {
         name: String,
     },
 
-    /// Run a command in an isolated Orbit environment
+    /// Run a command in an isolated Orbit session with lifetime lease protection
     #[command(alias = "r")]
     Run {
-        /// Orbit identifier name
+        /// Orbit identifier name to activate
         name: String,
 
-        /// Command and arguments to execute
-        #[arg(last = true, required = true)]
+        /// Automatically restore to the previous active orbit upon session exit
+        #[arg(long, default_value_t = false)]
+        restore: bool,
+
+        /// Command and arguments to execute (defaults to 'agy')
+        #[arg(last = true)]
         cmd: Vec<String>,
     },
 
