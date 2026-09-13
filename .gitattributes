@@ -1,0 +1,23 @@
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Explicit text files with specific line endings
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.rc text eol=crlf
+
+*.sh text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary files
+*.ico binary
+*.png binary
+*.enc binary
+*.bin binary
+*.lock binary

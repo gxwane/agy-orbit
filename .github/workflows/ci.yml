@@ -1,0 +1,41 @@
+name: CI Quality Gauntlet
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  gauntlet:
+    name: Gauntlet on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Code Formatting (Cargo fmt)
+        run: cargo fmt --all --check
+
+      - name: Static Analysis (Cargo Clippy)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Test Suite (Unit & Integration)
+        run: cargo test --all-targets
