@@ -6,6 +6,18 @@ rust-version = "1.80"
 description = "Seamless Multi-Account Manager & Isolated Orbit Runner for Antigravity CLI (agy)"
 license = "MIT"
 authors = ["GX Wane <gxwane@outlook.com>"]
+repository = "https://github.com/gxwane/agy-orbit"
+homepage = "https://github.com/gxwane/agy-orbit"
+documentation = "https://docs.rs/agy-orbit"
+readme = "README.md"
+keywords = ["antigravity", "cli", "account-manager", "oauth", "credential-manager"]
+categories = ["command-line-utilities", "authentication", "development-tools"]
+exclude = [
+    "/.github",
+    "/scripts",
+    "/docs",
+    "tests/**",
+]
 
 [lib]
 name = "agy_orbit"

@@ -1,40 +1,203 @@
 # agy-orbit (agyo)
 
 [![CI](https://github.com/gxwane/agy-orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/gxwane/agy-orbit/actions)
+[![Crates.io](https://img.shields.io/crates/v/agy-orbit.svg)](https://crates.io/crates/agy-orbit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](Cargo.toml)
 
-English | [简体中文](README_zh.md)
+**English** | [简体中文](README_zh.md)
 
-> 🪐 **Transactional Profile Manager & Lifetime Lease Supervisor for Antigravity CLI (`agy`).**
+> 🪐 **Lightweight, transactional multi-account profile manager and lifetime lease supervisor for Google Antigravity CLI (`agy`).**
 > 
-> 专为 Google Antigravity CLI 设计的轻量级多账号事务管理与安全切换工具。
+> Fast (<5ms), cross-platform account switching and quota inspection with narrow authentication scoping and crash-resilient state guarantees.
 
 ---
 
-## 为什么需要 agy-orbit？
+## 💡 Why agy-orbit?
 
-在日常使用 Antigravity CLI (`agy`) 进行高强度编码时：
-- `agy` 原生不支持便捷的多账号切换与配额轮换。
-- 全量目录镜像方案的局限性：若尝试通过整体复制或替换 `~/.gemini/antigravity-cli/` 目录来实现切号，因其包含数以万计的内部会话与日志文件（`brain/`），极易触发跨终端文件锁竞争并带来意外覆盖本地持久状态的风险。
+When using Google Antigravity CLI (`agy`) for intensive AI coding:
+- `agy` does not natively support seamless multi-account profile switching or quota rotation.
+- **Full Directory Mirroring vs. Granular Target Isolation**: Coarse-grained approaches often treat the entire `~/.gemini/antigravity-cli/` runtime tree as a swappable profile. Because this directory hosts active conversation states (`brain/`), cached artifacts, and process lockfiles (often spanning tens of thousands of volatile files), blanket directory swapping introduces significant risks of unintended history loss, heavy disk I/O, and cross-platform file-locking collisions (e.g., Windows `Sharing Violation`).
 
-**agy-orbit 遵循核心设计约束 (Core Design Invariants)**：
-- **不破坏工作区与工具链**：不修改 `HOME` / `USERPROFILE`，不复制或扫描 `brain/`（会话记录）与 `plugins/`，不打断 Git、OpenSSH、Cargo、npm 等开发者环境。
-- **精准管理三大认证标的**：仅管理 `oauth_creds.json`、`google_accounts.json` 与操作系统密钥环。
-- **预写崩溃事务日志 (WAL Journal)**：四阶段原子状态机（`PREPARE -> APPLY -> VERIFY -> COMMIT`），断电/崩溃自动检测恢复。
-- **平台原生加密**：Windows 原生 DPAPI / macOS Keychain Master-Key 加密保护，避免明文凭据落盘泄露。
-- **生命周期排他租约 (Lifetime Lease)**：防止长期运行期间多终端凭据冲突，并在退出时自动反向捕获最新的 OAuth Refresh Token。
-- **智能双模人机工效**：TTY 终端敲 `agyo` 直接唤起方向键盲切看板；脚本/管道自动静默降级为文本。
-- **单二进制**：Rust 原生编写，切换耗时 < 5ms。
+### 🛡️ Core Design Invariants
+
+`agy-orbit` is built on explicit, verifiable engineering constraints:
+1. **Narrow Runtime Scoping**: Leaves `~/.gemini/antigravity-cli/brain/`, `plugins/`, and runtime directories untouched. Avoids modifying `HOME` or `USERPROFILE` to prevent interference with developer toolchains (Git, OpenSSH, Cargo, npm, Docker).
+2. **Strictly Manage 3 Authentication Targets**:
+   - Target ①: `~/.gemini/oauth_creds.json` (active OAuth session)
+   - Target ②: `~/.gemini/google_accounts.json` (account mappings)
+   - Target ③: OS Credential Keyring (`gemini:antigravity`)
+3. **Tripartite Decoupled Storage Topology**:
+   - **Target Plane**: `~/.gemini/` (narrow, read/write active session only).
+   - **Storage & State Plane**: `~/.agyo/` (independent, crash-resilient encrypted database).
+   - **Ephemeral Runtime Plane**: `%LOCALAPPDATA%\agy-orbit\run` (Windows) or `$XDG_RUNTIME_DIR/agyo` (Linux/macOS) (tmpfs, memory-backed, immune to cloud drive sync locks).
+4. **Crash-Resilient WAL State Machine**: 4-phase atomic transitions (`PREPARE -> APPLY -> VERIFY -> COMMIT`). Auto-heals and rolls back interrupted switches on crash or power loss.
+5. **Platform-Native Encryption**: Windows DPAPI (`CryptProtectData`) / POSIX AES-256-GCM authenticated encryption. Zero plaintext secrets on disk.
+6. **Lifetime Lease Supervisor & Two-Way Sync**:
+   - `agyo run <orbit> -- agy`: Holds an exclusive kernel lock during child process execution to prevent terminal switching collisions.
+   - On process exit, automatically captures newly refreshed OAuth tokens back to Orbit storage before releasing locks.
+7. **Context-Aware Ergonomics**: Beautiful interactive TUI menu in interactive TTYs; silent plaintext fallback in scripts and pipes (`agyo | grep`).
 
 ---
 
-## 核心功能概览
+## 📦 Installation
 
-- **`agyo save <orbit-name>`** (别名: `s`)：捕获当前登录的 Google 账号并加密归档为具名轨道。
-- **`agyo use <orbit-name>`** (别名: `u`, `sw`)：全局切换当前活动轨道（WAL 事务日志与崩溃恢复保障）。
-- **`agyo` (无参启动)**：交互式方向键选择菜单（TUI 导航，智能感知 TTY）。
-- **`agyo list`** (别名: `ls`)：直观展示所有保存的轨道、对应邮箱、最后使用时间及当前激活项。
-- **`agyo whoami`** (别名: `w`)：快速查看当前活动账号详情。
-- **`agyo run <orbit-name> -- <cmd...>`** (别名: `r`)：以目标轨道启动并持有生命周期排他租约，退出时自动反向同步最新 Refresh Token。
-- **`agyo quota [orbit] [-a/--all] [-r/--refresh]`** (别名: `q`)：实时查询各账号模型配额与用量大盘（支持单账号或 `-a` 全量多账号聚合大盘与倒计时）。
-- **`agyo remove <orbit-name>`** (别名: `rm`)：安全移除指定轨道。
+### Prerequisites (Linux Only)
+On Linux distributions, `agy-orbit` utilizes system SecretService (D-Bus) for secure keyring integration. Install the required build libraries:
+
+```bash
+# Ubuntu / Debian
+sudo apt-get install -y pkg-config libsecret-1-dev libdbus-1-dev
+
+# Fedora / RHEL
+sudo dnf install -y pkgconf libsecret-devel dbus-devel
+
+# Arch Linux
+sudo pacman -S --needed pkgconf libsecret dbus
+```
+
+### Prebuilt Binaries
+Download standalone release archives from [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) for:
+- **Windows (x86_64 MSVC)**
+- **macOS (Apple Silicon M1/M2/M3/M4 & Intel x86_64)**
+- **Linux (x86_64 glibc)**
+
+### From Source via Cargo
+```bash
+# Install from crates.io
+cargo install agy-orbit
+
+# Or build locally from clone
+git clone https://github.com/gxwane/agy-orbit.git
+cd agy-orbit
+cargo install --path .
+```
+
+---
+
+## 🚀 Quick Start
+
+```bash
+# 1. Log in to your first account using official Antigravity CLI
+agy auth login
+
+# 2. Snapshot current credentials as a named Orbit
+agyo save personal -l "Personal Gmail"
+
+# 3. Log in to your second account
+agy auth login
+
+# 4. Snapshot as another Orbit
+agyo save work -l "Company Workspace"
+
+# 5. List all saved Orbits
+agyo list
+
+# 6. Globally switch active account in milliseconds
+agyo use work
+
+# 7. Or launch an isolated session with lifetime lease protection & auto token sync
+agyo run personal -- agy
+
+# 8. Inspect live quota consumption dashboard across all accounts
+agyo quota --all
+```
+
+---
+
+## 📖 CLI Command Reference
+
+| Command | Alias | Description |
+| :--- | :---: | :--- |
+| `agyo` *(no args)* | - | Smart TTY interactive dashboard with arrow-key TUI menu |
+| `agyo save <orbit>` | `s` | Snapshot active credentials as a named Orbit (`-l, --label`, `-f, --force`) |
+| `agyo use <orbit>` | `u`, `sw` | Atomically switch active account with WAL crash-recovery guarantee |
+| `agyo list` | `ls` | Display formatted table of all saved Orbits, emails, and active state |
+| `agyo whoami` | `w` | Show currently active Google account and Keyring details |
+| `agyo run <orbit> [-- <cmd...>]`| `r` | Run command under Lifetime Lease lock with reverse token sync (`--restore`) |
+| `agyo quota [orbit]` | `q` | Check live model quota and countdowns (`-a, --all`, `-r, --refresh`) |
+| `agyo remove <orbit>` | `rm` | Safely delete a saved Orbit profile |
+| `agyo completion [shell]` | `comp`| Generate shell completion script (`--raw`, supports bash, zsh, fish, powershell, elvish) |
+
+### Detailed Flags & Options
+
+#### `agyo save <NAME>`
+- `-l, --label <STRING>`: Optional human-readable description (e.g. `"Work Pro Plan"`).
+- `-f, --force`: Overwrite existing Orbit snapshot without prompting.
+
+#### `agyo run <NAME> [--restore] [-- <CMD...>]`
+- `--restore`: Automatically revert global credentials back to the previous Orbit upon child process exit.
+- `cmd`: Command and arguments to execute (defaults to `agy`).
+
+#### `agyo quota [NAME]`
+- `-a, --all`: Display aggregated multi-account dashboard across all saved Orbits.
+- `-r, --refresh`: Bypass 60-second local cache and fetch fresh remote data.
+
+#### `agyo completion [SHELL]`
+- `[SHELL]`: Target shell family (`bash`, `zsh`, `fish`, `powershell`, `elvish`). Auto-detected if omitted in interactive terminals.
+- `--raw`: Output raw completion script without setup instructions.
+
+---
+
+## 🐚 Shell Completion Setup
+
+```bash
+# PowerShell
+agyo completion powershell >> $PROFILE
+
+# Bash
+agyo completion bash > ~/.local/share/bash-completion/completions/agyo
+
+# Zsh
+agyo completion zsh > ~/.zfunc/_agyo
+
+# Fish
+agyo completion fish > ~/.config/fish/completions/agyo.fish
+```
+
+---
+
+## 🔧 Environment Variables
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `AGYO_HOME` | `~/.agyo/` | Path to persistent Orbit storage root |
+| `GEMINI_HOME`| `~/.gemini/` | Target Antigravity configuration directory |
+| `AGYO_RUNTIME_DIR` | Windows: `%LOCALAPPDATA%\agy-orbit\run`<br>Unix: `$XDG_RUNTIME_DIR/agyo` | Ephemeral runtime lock & lease directory |
+| `AGYO_KEYRING_TARGET` | `LegacyGeneric:target=gemini:antigravity` | Windows Credential Manager target entry |
+| `AGYO_KEYRING_SERVICE`| `gemini` | Linux SecretService / macOS Keychain service name |
+
+---
+
+## 🛡️ Security Design Constraints & Anti-Malware Invariants
+
+To maintain architectural transparency and minimize false-positive detections under modern EDR and antivirus heuristics, `agy-orbit` strictly enforces the following engineering constraints:
+1. **Scoped Credential Access**: Queries strictly the single target `gemini:antigravity`. Never enumerates or dumps other system secrets.
+2. **No Process Injection**: Never calls `CreateRemoteThread` or injects code into external processes.
+3. **No API Hooking**: Relies exclusively on standard, documented Win32 and POSIX system APIs.
+4. **No Binary Packing**: Distributed as clean, deterministic Rust binaries without UPX or custom obfuscators.
+5. **Zero Outbound Credential Telemetry**: Zero network requests other than standard Google quota endpoints.
+6. **No Silent Persistence**: Never creates background daemons, scheduled tasks, or startup registry keys.
+7. **Read-Only Quota Invariant**: `agyo quota` strictly reads existing access tokens and **never** rotates or exchanges refresh tokens.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please ensure all pull requests pass the quality checks before submitting:
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_gauntlet.ps1
+
+# Linux / macOS
+./scripts/verify_gauntlet.sh
+```
+
+Please adhere to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
