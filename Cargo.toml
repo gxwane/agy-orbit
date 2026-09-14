@@ -44,7 +44,7 @@ hex = "0.4"
 crossterm = "0.28"
 ureq = { version = "2.10", default-features = false, features = ["json", "tls"] }
 clap_complete = "4.5"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 getrandom = "0.2"
 
 [build-dependencies]
