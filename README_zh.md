@@ -57,10 +57,12 @@ sudo pacman -S --needed pkgconf libsecret dbus
 ```
 
 ### 预编译二进制下载
-可直接在 [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) 下载对应平台的免编译压缩包：
-- **Windows (x86_64 MSVC)**
-- **macOS (Apple Silicon M1/M2/M3/M4 & Intel x86_64)**
-- **Linux (x86_64 glibc)**
+可直接在 [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) 下载对应平台的免编译压缩包，解压后将 `agyo`（Windows 为 `agyo.exe`）放置到系统 `PATH` 目录：
+- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
+- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
+- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
+- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
+
 
 ### 通过 Cargo 编译安装
 ```bash
@@ -154,6 +156,61 @@ agyo completion zsh > ~/.zfunc/_agyo
 # Fish
 agyo completion fish > ~/.config/fish/completions/agyo.fish
 ```
+
+---
+
+## 🗑️ 卸载指南 (Uninstallation)
+
+`agy-orbit` 遵循纯净工程原则：零开机自启、零系统注册表篡改、零后台守护进程。卸载时提供梯度清理策略与一键官方安全脚本：
+
+### 梯次 1：仅卸载可执行文件（日常升级或暂停使用）
+
+- **通过 Cargo 安装**：
+  ```bash
+  cargo uninstall agy-orbit
+  ```
+- **手动安装预编译包**：
+  直接从系统 `PATH` 目录删除 `agyo`（Windows 为 `agyo.exe`）二进制文件。
+  > 💡 此步骤会完整保留您的多账号加密存储（`~/.agyo/`），未来重新安装即可直接复用。
+
+### 梯次 2：完全清理（删除数据与锁目录）
+
+- **一键官方安全脚本（推荐）**：
+  ```powershell
+  # Windows PowerShell
+  powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+  ```
+  ```bash
+  # macOS / Linux
+  ./scripts/uninstall.sh
+  ```
+- **手动清理命令**：
+  - **Windows (PowerShell)**：
+    ```powershell
+    # 1. 删除加密存储目录
+    Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
+    # 2. 清理运行期易失锁目录
+    Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
+    ```
+  - **macOS / Linux**：
+    ```bash
+    # 1. 删除加密存储目录
+    rm -rf ~/.agyo
+    # 2. 清理运行期易失锁目录
+    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
+    rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
+    ```
+
+### 梯次 3：Shell 自动补全清理提醒
+
+若您此前配置过 Shell 补全，请移除配置文件中的对应行，避免新终端启动时报错：
+- **PowerShell**：打开 `$PROFILE`，移除包含 `agyo completion` 或 `.agyo\completion.ps1` 的行；
+- **Bash / Zsh**：从 `~/.bashrc` 或 `~/.zshrc` 中移除 `agyo completion` 行，或删除 `~/.local/share/bash-completion/completions/agyo`；
+- **Fish**：删除 `~/.config/fish/completions/agyo.fish`。
+
+> [!NOTE]
+> **关于 Google Antigravity 官方凭据独立性**  
+> `agy-orbit` 遵循最小介入面（Narrow Surface）设计，卸载 `agyo` **不会**注销或删除当前正在被 Google Antigravity 使用的官方凭据（`~/.gemini/` 及系统密钥环中的当前会话）。卸载后官方 `agy` 会话仍将完全保持登录状态；若需从本机彻底登出 Google 账号，请直接执行官方命令：`agy auth logout`。
 
 ---
 

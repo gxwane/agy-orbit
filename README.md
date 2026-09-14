@@ -57,10 +57,11 @@ sudo pacman -S --needed pkgconf libsecret dbus
 ```
 
 ### Prebuilt Binaries
-Download standalone release archives from [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) for:
-- **Windows (x86_64 MSVC)**
-- **macOS (Apple Silicon M1/M2/M3/M4 & Intel x86_64)**
-- **Linux (x86_64 glibc)**
+Download standalone release archives from [GitHub Releases](https://github.com/gxwane/agy-orbit/releases), extract, and place the `agyo` binary (`agyo.exe` on Windows) somewhere in your system `PATH`:
+- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
+- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
+- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
+- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
 
 ### From Source via Cargo
 ```bash
@@ -154,6 +155,61 @@ agyo completion zsh > ~/.zfunc/_agyo
 # Fish
 agyo completion fish > ~/.config/fish/completions/agyo.fish
 ```
+
+---
+
+## 🗑️ Uninstallation
+
+`agy-orbit` adheres to strict zero-pollution engineering: no startup entries, no registry manipulation, no background daemons. To cleanly uninstall, follow the graduated cleanup tiers:
+
+### Tier 1: Remove Binary Only (Upgrade or Pause)
+
+- **Installed via Cargo**:
+  ```bash
+  cargo uninstall agy-orbit
+  ```
+- **Installed via Prebuilt Releases**:
+  Simply delete the `agyo` (or `agyo.exe`) binary from your `$PATH` directory.
+  > 💡 This preserves your encrypted multi-account storage (`~/.agyo/`), allowing seamless reuse after reinstallation.
+
+### Tier 2: Full Physical Teardown (Destroy Data & Locks)
+
+- **One-click official safe uninstaller (recommended)**:
+  ```powershell
+  # Windows PowerShell
+  powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+  ```
+  ```bash
+  # macOS / Linux
+  ./scripts/uninstall.sh
+  ```
+- **Manual cleanup commands**:
+  - **Windows (PowerShell)**:
+    ```powershell
+    # 1. Remove encrypted storage
+    Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
+    # 2. Remove ephemeral runtime locks
+    Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
+    ```
+  - **macOS / Linux**:
+    ```bash
+    # 1. Remove encrypted storage
+    rm -rf ~/.agyo
+    # 2. Remove ephemeral runtime locks
+    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
+    rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
+    ```
+
+### Tier 3: Shell Completion Cleanup
+
+If you previously configured shell completion, remove the corresponding lines from your shell profile to prevent startup errors:
+- **PowerShell**: Open `$PROFILE` and remove any line referencing `agyo completion` or `.agyo\completion.ps1`.
+- **Bash / Zsh**: Remove `agyo completion` lines from `~/.bashrc` or `~/.zshrc`, or delete `~/.local/share/bash-completion/completions/agyo`.
+- **Fish**: Delete `~/.config/fish/completions/agyo.fish`.
+
+> [!NOTE]
+> **Antigravity Credential Sovereignty**  
+> `agy-orbit` strictly adheres to its Narrow Surface design invariant. Uninstalling `agyo` will **never** log out or delete credentials currently used by Google Antigravity (`~/.gemini/` and your OS Keyring). Your official `agy` session remains fully authenticated after uninstallation. To log out from Google entirely, use the official command: `agy auth logout`.
 
 ---
 
