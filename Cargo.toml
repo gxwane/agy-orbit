@@ -32,8 +32,10 @@ hex = "0.4"
 crossterm = "0.28"
 ureq = { version = "2.10", default-features = false, features = ["json", "tls"] }
 clap_complete = "4.5"
+aes-gcm = "0.10"
+getrandom = "0.2"
 
-[target.'cfg(target_os = "windows")'.build-dependencies]
+[build-dependencies]
 winres = "0.1.12"
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -44,6 +46,12 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "linux-native"] }
+
+[target.'cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = []

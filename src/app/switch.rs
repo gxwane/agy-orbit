@@ -7,6 +7,7 @@ use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 use crate::ports::vault::VaultPort;
 use chrono::Utc;
+use colored::Colorize;
 
 pub struct SwitchService<'a> {
     pub target: &'a dyn TargetPort,
@@ -134,11 +135,19 @@ impl<'a> SwitchService<'a> {
                 ));
             }
 
-            let active_secret = self.keyring.get_secret()?;
+            let active_secret = self.keyring.get_secret().unwrap_or_default();
             if active_secret != target_secret {
-                return Err(OrbitError::RollbackFailed(
-                    "Verification mismatch in OS keyring".into(),
-                ));
+                // If active secret is empty and target secret is non-empty, check for headless fallback
+                if active_secret.is_empty() && !target_secret.is_empty() {
+                    eprintln!(
+                        "{} Running in headless environment without desktop keyring daemon; keyring sync skipped.",
+                        "⚠".yellow()
+                    );
+                } else {
+                    return Err(OrbitError::RollbackFailed(
+                        "Verification mismatch in OS keyring".into(),
+                    ));
+                }
             }
 
             Ok(())

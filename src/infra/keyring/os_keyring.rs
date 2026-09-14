@@ -1,5 +1,6 @@
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
+use colored::Colorize;
 use keyring::Entry;
 
 #[derive(Default, Clone)]
@@ -27,19 +28,49 @@ impl OsKeyring {
 }
 
 fn decode_secret_bytes(bytes: &[u8]) -> Result<String> {
-    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
-        return Ok(s);
+    // Strip trailing padding null bytes (compatible with Win32 / C-String trailing nulls)
+    let trimmed_bytes = match bytes.iter().rposition(|&b| b != 0) {
+        Some(pos) => &bytes[..=pos],
+        None => return Ok(String::new()),
+    };
+
+    // 1. If valid UTF-8 without internal null bytes, it is genuine UTF-8
+    if let Ok(s) = std::str::from_utf8(trimmed_bytes) {
+        if !s.contains('\0') {
+            return Ok(s.trim().to_string());
+        }
     }
-    // Handle Windows UTF-16LE encoding (e.g. from Go wincred)
-    if bytes.len() % 2 == 0 {
-        let u16s: Vec<u16> = bytes
+
+    // 2. Rigorous UTF-16LE check (must have even number of bytes)
+    let u16_bytes = if bytes.len() % 2 == 0 {
+        bytes
+    } else if trimmed_bytes.len() % 2 == 0 {
+        trimmed_bytes
+    } else {
+        &[]
+    };
+
+    if !u16_bytes.is_empty() {
+        let u16s: Vec<u16> = u16_bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         if let Ok(s) = String::from_utf16(&u16s) {
-            return Ok(s);
+            let cleaned = s.trim().trim_matches('\0').trim();
+            if !cleaned.is_empty() {
+                return Ok(cleaned.to_string());
+            }
         }
     }
+
+    // 3. Fallback: strip embedded nulls if present in UTF-8
+    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+        let cleaned = s.replace('\0', "");
+        if !cleaned.trim().is_empty() {
+            return Ok(cleaned.trim().to_string());
+        }
+    }
+
     Err(OrbitError::Keyring(
         "Keyring secret bytes are neither valid UTF-8 nor UTF-16LE".into(),
     ))
@@ -48,28 +79,101 @@ fn decode_secret_bytes(bytes: &[u8]) -> Result<String> {
 impl KeyringPort for OsKeyring {
     fn get_secret(&self) -> Result<String> {
         let entry = self.get_entry()?;
-        // Try get_password first (standard UTF-8)
-        if let Ok(s) = entry.get_password() {
-            return Ok(s);
+        // Bypass get_password() shortcut to prevent fake-UTF8 null-embedded truncation;
+        // route directly to raw bytes through decode_secret_bytes
+        match entry.get_secret() {
+            Ok(raw) => decode_secret_bytes(&raw),
+            Err(keyring::Error::NoStorageAccess(_)) | Err(keyring::Error::PlatformFailure(_)) => {
+                // Headless Linux / CI / SSH environment without D-Bus SecretService:
+                // Gracefully degrade to empty secret string so read-only operations (whoami, list)
+                // can fallback to disk credentials in ~/.gemini
+                Ok(String::new())
+            }
+            Err(e) => Err(OrbitError::Keyring(format!(
+                "Failed to get keyring secret: {e}"
+            ))),
         }
-        // Fall back to get_secret() raw bytes and adaptive UTF-8/UTF-16LE decode
-        let raw = entry
-            .get_secret()
-            .map_err(|e| OrbitError::Keyring(format!("Failed to get keyring secret: {e}")))?;
-        decode_secret_bytes(&raw)
     }
 
     fn set_secret(&self, secret: &str) -> Result<()> {
         let entry = self.get_entry()?;
-        entry
-            .set_password(secret)
-            .map_err(|e| OrbitError::Keyring(format!("Failed to set keyring secret: {e}")))
+        match entry.set_password(secret) {
+            Ok(_) => Ok(()),
+            Err(keyring::Error::NoStorageAccess(e)) | Err(keyring::Error::PlatformFailure(e)) => {
+                eprintln!(
+                    "{} Warning: OS Keyring unreachable in headless environment ({e}). \
+                     Keyring update skipped; only disk credentials updated. \
+                     Resync will be required in desktop session.",
+                    "⚠".yellow()
+                );
+                Ok(())
+            }
+            Err(e) => Err(OrbitError::Keyring(format!(
+                "Failed to set keyring secret: {e}"
+            ))),
+        }
     }
 
     fn delete_secret(&self) -> Result<()> {
         let entry = self.get_entry()?;
-        entry
-            .delete_credential()
-            .map_err(|e| OrbitError::Keyring(format!("Failed to delete keyring secret: {e}")))
+        match entry.delete_credential() {
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(keyring::Error::NoStorageAccess(_)) | Err(keyring::Error::PlatformFailure(_)) => {
+                // Graceful ignore deletion failure in headless environment
+                Ok(())
+            }
+            Err(e) => Err(OrbitError::Keyring(format!(
+                "Failed to delete keyring secret: {e}"
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_secret_bytes_utf8() {
+        let raw = b"standard_secret_token_12345";
+        assert_eq!(
+            decode_secret_bytes(raw).unwrap(),
+            "standard_secret_token_12345"
+        );
+    }
+
+    #[test]
+    fn test_decode_secret_bytes_utf8_with_trailing_null() {
+        let raw = b"standard_secret_token_12345\0\0";
+        assert_eq!(
+            decode_secret_bytes(raw).unwrap(),
+            "standard_secret_token_12345"
+        );
+    }
+
+    #[test]
+    fn test_decode_secret_bytes_even_length_with_null_not_cjk() {
+        // b"my_token1\0" has length 10 (even). Must decode as UTF-8, NOT CJK gibberish!
+        let raw = b"my_token1\0";
+        assert_eq!(decode_secret_bytes(raw).unwrap(), "my_token1");
+    }
+
+    #[test]
+    fn test_decode_secret_bytes_utf16le() {
+        let utf16_chars: Vec<u16> = "token_from_wincred_utf16le".encode_utf16().collect();
+        let mut raw = Vec::new();
+        for u in utf16_chars {
+            raw.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(
+            decode_secret_bytes(&raw).unwrap(),
+            "token_from_wincred_utf16le"
+        );
+    }
+
+    #[test]
+    fn test_decode_secret_bytes_all_nulls() {
+        let raw = b"\0\0\0\0";
+        assert_eq!(decode_secret_bytes(raw).unwrap(), "");
     }
 }

@@ -16,9 +16,9 @@ const WINDOWS_RESERVED: &[&str] = &[
 
 impl OrbitName {
     pub fn new<S: AsRef<str>>(name: S) -> Result<Self> {
-        let s = name.as_ref().trim();
+        let s = name.as_ref().trim().to_ascii_lowercase();
         if s.is_empty() || s.len() > 64 || s.starts_with('-') {
-            return Err(OrbitError::InvalidOrbitName(s.to_string()));
+            return Err(OrbitError::InvalidOrbitName(s));
         }
 
         // Must only contain ascii alphanumeric, hyphen, underscore
@@ -26,15 +26,15 @@ impl OrbitName {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !valid_chars || s == "." || s == ".." {
-            return Err(OrbitError::InvalidOrbitName(s.to_string()));
+            return Err(OrbitError::InvalidOrbitName(s));
         }
 
         let upper = s.to_ascii_uppercase();
         if WINDOWS_RESERVED.contains(&upper.as_str()) {
-            return Err(OrbitError::InvalidOrbitName(s.to_string()));
+            return Err(OrbitError::InvalidOrbitName(s));
         }
 
-        Ok(Self(s.to_string()))
+        Ok(Self(s))
     }
 
     pub fn as_str(&self) -> &str {
@@ -119,6 +119,16 @@ mod tests {
         assert!(OrbitName::new("personal-2026").is_ok());
         assert!(OrbitName::new("client_proj_a").is_ok());
         assert!(OrbitName::new("A123_b").is_ok());
+    }
+
+    #[test]
+    fn test_orbit_name_case_normalization() {
+        let n1 = OrbitName::new("Work").unwrap();
+        let n2 = OrbitName::new("work").unwrap();
+        let n3 = OrbitName::new("WORK").unwrap();
+        assert_eq!(n1, n2);
+        assert_eq!(n2, n3);
+        assert_eq!(n1.as_str(), "work");
     }
 
     #[test]

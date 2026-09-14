@@ -114,8 +114,7 @@ impl<'a> RunService<'a> {
         let program = &cmd_display[0];
         let args = &cmd_display[1..];
 
-        let mut command = Command::new(program);
-        command.args(args);
+        let mut command = build_supervised_command(program, args);
         command.env("AGYO_SESSION_ACTIVE", "1");
         command.env("AGYO_SESSION_PID", std::process::id().to_string());
         command.env("AGYO_SESSION_ORBIT", target_orbit.as_str());
@@ -203,16 +202,20 @@ impl<'a> RunService<'a> {
         let keyring_secret = match self.keyring.get_secret() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!(
-                    "{} [Two-Way Sync] Warning: failed to read active keyring secret: {e}",
-                    "⚠".yellow()
-                );
-                return Ok(false);
+                if oauth_bytes.is_some() {
+                    String::new()
+                } else {
+                    eprintln!(
+                        "{} [Two-Way Sync] Warning: failed to read active keyring secret: {e}",
+                        "⚠".yellow()
+                    );
+                    return Ok(false);
+                }
             }
         };
 
         // Check 1: Structure & Semantic Validation (Anti-Torn Write)
-        if let Err(e) = validate_keyring_secret_for_sync(&keyring_secret) {
+        if let Err(e) = validate_keyring_secret_for_sync(&keyring_secret, oauth_bytes.as_deref()) {
             eprintln!(
                 "{} [Two-Way Sync] Warning: invalid keyring secret ({e}). Preserving vault snapshot.",
                 "⚠".yellow()
@@ -277,8 +280,21 @@ impl<'a> RunService<'a> {
         }
 
         // Check 4: Encrypt and persist to Orbit Vault
-        let sealed_secret = self.vault.seal(keyring_secret.as_bytes())?;
-        let snapshot = CredentialSnapshot::new(oauth_bytes, accounts_bytes, keyring_secret);
+        // In headless environments where keyring_secret is empty, preserve existing sealed_secret
+        // to prevent erasing valid keys saved in desktop sessions.
+        let (sealed_secret, sync_keyring_secret) = if keyring_secret.trim().is_empty() {
+            if let Ok((old_snap, old_sealed)) = self.storage.load_orbit_snapshot(orbit_name) {
+                (old_sealed, old_snap.keyring_secret)
+            } else {
+                let sealed = self.vault.seal(b"")?;
+                (sealed, String::new())
+            }
+        } else {
+            let sealed = self.vault.seal(keyring_secret.as_bytes())?;
+            (sealed, keyring_secret)
+        };
+
+        let snapshot = CredentialSnapshot::new(oauth_bytes, accounts_bytes, sync_keyring_secret);
         let mut index = self.storage.load_index()?;
 
         let meta = OrbitMetadata {
@@ -306,6 +322,105 @@ impl<'a> RunService<'a> {
 
         Ok(true)
     }
+}
+
+#[cfg(windows)]
+fn build_supervised_command(program: &str, args: &[String]) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    // 1. If program explicitly ends in .exe, execute directly without cmd.exe
+    if program.ends_with(".exe") {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        return cmd;
+    }
+
+    // 2. Probe PATH for program.exe first
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let exe_candidate = dir.join(format!("{program}.exe"));
+            if exe_candidate.is_file() {
+                let mut cmd = Command::new(exe_candidate);
+                cmd.args(args);
+                return cmd;
+            }
+        }
+
+        // 3. Probe PATH for .cmd or .bat (e.g. npm global install like agy.cmd)
+        for ext in &["cmd", "bat"] {
+            let script_name = if program.ends_with(&format!(".{ext}")) {
+                program.to_string()
+            } else {
+                format!("{program}.{ext}")
+            };
+            for dir in std::env::split_paths(&path_var) {
+                let script_candidate = dir.join(&script_name);
+                if script_candidate.is_file() {
+                    // Win32 cmd.exe wrapping: cmd.exe /d /s /c ""<script>" <args...>"
+                    // The /s switch combined with outer sacrificial quotes prevents
+                    // cmd.exe from stripping inner quotes on paths with spaces.
+                    let mut cmd = Command::new("cmd.exe");
+                    cmd.arg("/d").arg("/s").arg("/c");
+
+                    let mut raw_line = String::from("\"");
+                    raw_line.push_str(&quote_win32_arg(&script_candidate.to_string_lossy()));
+                    for arg in args {
+                        raw_line.push(' ');
+                        raw_line.push_str(&quote_win32_arg(arg));
+                    }
+                    raw_line.push('"');
+
+                    cmd.raw_arg(&raw_line);
+                    return cmd;
+                }
+            }
+        }
+    }
+
+    // 4. Default fallback: invoke program directly
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd
+}
+
+#[cfg(windows)]
+fn quote_win32_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.ends_with('\\') || arg.chars().any(|c| " \t\"&|<>()^%".contains(c)) {
+        let mut quoted = String::from("\"");
+        let mut backslashes = 0;
+        for c in arg.chars() {
+            if c == '\\' {
+                backslashes += 1;
+            } else if c == '"' {
+                for _ in 0..(backslashes * 2 + 1) {
+                    quoted.push('\\');
+                }
+                quoted.push('"');
+                backslashes = 0;
+            } else {
+                for _ in 0..backslashes {
+                    quoted.push('\\');
+                }
+                backslashes = 0;
+                quoted.push(c);
+            }
+        }
+        // In MSVC CRT / CommandLineToArgvW, trailing backslashes before closing quote must be doubled
+        for _ in 0..(backslashes * 2) {
+            quoted.push('\\');
+        }
+        quoted.push('"');
+        quoted
+    } else {
+        arg.to_string()
+    }
+}
+
+#[cfg(not(windows))]
+fn build_supervised_command(program: &str, args: &[String]) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd
 }
 
 #[cfg(test)]
@@ -402,5 +517,90 @@ mod tests {
             .sync_two_way_token(&orbit_name, &initial_fp)
             .unwrap();
         assert!(!synced, "Torn write must be rejected and not synced");
+    }
+
+    #[test]
+    fn test_sync_two_way_token_headless_preserves_vault_keyring() {
+        let target = MockTarget::default();
+        let keyring = MockKeyring::default();
+        let vault = MockVault;
+        let storage = MockStorage::default();
+        let lease = MockLeasePort::default();
+
+        let orbit_name = OrbitName::new("work").unwrap();
+
+        // 1. Initial saved snapshot with valid desktop keyring secret
+        let desktop_sealed = b"vault_sealed_desktop_keyring_secret_12345";
+        let initial_snapshot = CredentialSnapshot::new(
+            Some(br#"{"access_token": "token_v1_123456789012345678901234567890"}"#.to_vec()),
+            Some(br#"{"active": "work@company.com", "old": []}"#.to_vec()),
+            "desktop_secret_in_keyring".to_string(),
+        );
+        let meta = OrbitMetadata {
+            name: orbit_name.clone(),
+            email: "work@company.com".to_string(),
+            label: None,
+            created_at: Utc::now(),
+            last_used_at: None,
+        };
+        storage
+            .save_orbit_snapshot(&orbit_name, &initial_snapshot, &meta, desktop_sealed)
+            .unwrap();
+
+        let mut index = storage.load_index().unwrap();
+        index.orbits.insert(
+            "work".into(),
+            OrbitRecord {
+                email: "work@company.com".into(),
+                label: None,
+                created_at: Utc::now(),
+                last_used_at: None,
+            },
+        );
+        storage.save_index(&index).unwrap();
+
+        // 2. Headless environment setup: keyring secret is empty ("")
+        let initial_oauth = br#"{"access_token": "token_v1_123456789012345678901234567890"}"#;
+        let initial_accounts = br#"{"active": "work@company.com", "old": []}"#;
+        target.write_oauth_creds(initial_oauth).unwrap();
+        target.write_google_accounts(initial_accounts).unwrap();
+        // Keyring is empty in headless mode:
+        keyring.delete_secret().unwrap();
+
+        let initial_fp =
+            compute_target_fingerprint(Some(initial_oauth), Some(initial_accounts), "");
+
+        let service = RunService::new(&target, &keyring, &vault, &storage, &lease);
+
+        // 3. Antigravity refreshes OAuth tokens while running in headless mode
+        let updated_oauth = br#"{"access_token": "refreshed_v2_token_123456789012345678901234567890", "refresh_token": "1//refreshed_rt_1234567890"}"#;
+        target.write_oauth_creds(updated_oauth).unwrap();
+
+        // 4. Run sync -> should update OAuth tokens, BUT PRESERVE the existing vault sealed secret!
+        let synced = service
+            .sync_two_way_token(&orbit_name, &initial_fp)
+            .unwrap();
+        assert!(synced, "Headless sync must succeed for updated oauth creds");
+
+        let (saved_snapshot, saved_sealed) = storage.load_orbit_snapshot(&orbit_name).unwrap();
+        assert_eq!(saved_snapshot.oauth_creds, Some(updated_oauth.to_vec()));
+        assert_eq!(
+            saved_sealed, desktop_sealed,
+            "Headless sync must PRESERVE existing sealed keyring secret!"
+        );
+        assert_eq!(
+            saved_snapshot.keyring_secret.as_str(),
+            "desktop_secret_in_keyring",
+            "Original keyring secret text must be preserved!"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_quote_win32_arg_trailing_backslash() {
+        assert_eq!(quote_win32_arg(r#"C:\Users\test\"#), r#""C:\Users\test\\""#);
+        assert_eq!(quote_win32_arg(r#"simple"#), r#"simple"#);
+        assert_eq!(quote_win32_arg(r#"with space"#), r#""with space""#);
+        assert_eq!(quote_win32_arg(r#"with "quote""#), r#""with \"quote\"""#);
     }
 }

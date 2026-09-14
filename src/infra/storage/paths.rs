@@ -60,21 +60,63 @@ pub fn get_runtime_dir() -> Result<PathBuf> {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
-        // On Linux: prefer XDG_RUNTIME_DIR (/run/user/$UID) on tmpfs
+        // On Unix: prefer XDG_RUNTIME_DIR (/run/user/$UID) on tmpfs
         if let Some(runtime) = dirs::runtime_dir() {
-            Ok(runtime.join("agyo"))
-        } else {
-            Ok(std::env::temp_dir().join(format!("agyo-run-{}", unsafe { libc::getuid() })))
+            let p = runtime.join("agyo");
+            verify_or_create_secure_runtime_dir(&p)?;
+            return Ok(p);
         }
-    }
 
-    #[cfg(target_os = "macos")]
-    {
-        // On macOS: per-user temporary directory
-        Ok(std::env::temp_dir().join(format!("agyo-run-{}", unsafe { libc::getuid() })))
+        // Fallback: per-user temporary directory with strict 0700 permissions
+        let uid = unsafe { libc::getuid() };
+        let run_dir = std::env::temp_dir().join(format!("agyo-run-{uid}"));
+        verify_or_create_secure_runtime_dir(&run_dir)?;
+        Ok(run_dir)
     }
+}
+
+#[cfg(unix)]
+fn verify_or_create_secure_runtime_dir(dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let current_uid = unsafe { libc::getuid() };
+
+    if let Ok(meta) = std::fs::symlink_metadata(dir) {
+        // Assertion 1: Reject symlinks to prevent hijacking
+        if meta.file_type().is_symlink() {
+            return Err(OrbitError::Vault(format!(
+                "Runtime directory symlink hijack detected at {dir:?}"
+            )));
+        }
+        // Assertion 2: Must be an actual directory
+        if !meta.is_dir() {
+            return Err(OrbitError::Vault(format!(
+                "Runtime path exists but is not a directory: {dir:?}"
+            )));
+        }
+        // Assertion 3: Owner must match current process UID
+        if meta.uid() != current_uid {
+            return Err(OrbitError::Vault(format!(
+                "Runtime directory UID mismatch (owner: {}, current: {})",
+                meta.uid(),
+                current_uid
+            )));
+        }
+        // Assertion 4: Permissions strictly 0700 (no group or others access)
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(OrbitError::Vault(format!(
+                "Insecure runtime directory permissions: {mode:o} (must be 0700)"
+            )));
+        }
+    } else {
+        // Atomic creation with 0700 mode
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(dir)?;
+    }
+    Ok(())
 }
 
 /// Path to the permanent lifetime lease sentinel lock file (never deleted).

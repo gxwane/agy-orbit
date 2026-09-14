@@ -72,6 +72,23 @@ impl VaultPort for DpapiVault {
             )));
         }
 
+        if out_blob.pb_data.is_null() {
+            if out_blob.cb_data == 0 {
+                return Ok(Vec::new());
+            } else {
+                return Err(OrbitError::Vault(
+                    "DPAPI CryptProtectData returned null data pointer with non-zero length".into(),
+                ));
+            }
+        }
+
+        if out_blob.cb_data == 0 {
+            unsafe {
+                LocalFree(out_blob.pb_data as *mut _);
+            }
+            return Ok(Vec::new());
+        }
+
         let result = unsafe {
             let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
             let vec = slice.to_vec();
@@ -111,10 +128,30 @@ impl VaultPort for DpapiVault {
             )));
         }
 
+        if out_blob.pb_data.is_null() {
+            if out_blob.cb_data == 0 {
+                return Ok(Vec::new());
+            } else {
+                return Err(OrbitError::Vault(
+                    "DPAPI CryptUnprotectData returned null data pointer with non-zero length"
+                        .into(),
+                ));
+            }
+        }
+
+        if out_blob.cb_data == 0 {
+            unsafe {
+                LocalFree(out_blob.pb_data as *mut _);
+            }
+            return Ok(Vec::new());
+        }
+
         let result = unsafe {
             let slice = std::slice::from_raw_parts_mut(out_blob.pb_data, out_blob.cb_data as usize);
             let vec = slice.to_vec();
-            slice.fill(0);
+            for b in slice.iter_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
             LocalFree(out_blob.pb_data as *mut _);
             vec
         };

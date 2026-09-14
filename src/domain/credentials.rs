@@ -104,11 +104,18 @@ impl std::fmt::Debug for KeyringToken {
 }
 
 /// Validate keyring secret structure and semantic sanity before two-way sync back to vault.
-pub fn validate_keyring_secret_for_sync(secret: &str) -> Result<()> {
+/// In headless environments where OS keyring is unavailable, an empty keyring secret is accepted
+/// IF AND ONLY IF active OAuth credentials are provided and semantically valid.
+pub fn validate_keyring_secret_for_sync(secret: &str, oauth_bytes: Option<&[u8]>) -> Result<()> {
     let trimmed = secret.trim();
     if trimmed.is_empty() {
+        if let Some(bytes) = oauth_bytes {
+            if let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes) {
+                return oauth.validate_for_sync();
+            }
+        }
         return Err(OrbitError::CredentialValidation(
-            "Keyring secret is empty".into(),
+            "Keyring secret is empty and no valid active OAuth credentials found".into(),
         ));
     }
     if trimmed.starts_with('{') {
@@ -604,5 +611,24 @@ mod tests {
         let updated = update_disk_oauth_bytes(original, "new_disk_token").unwrap();
         let parsed: OAuthCreds = serde_json::from_slice(&updated).unwrap();
         assert_eq!(parsed.access_token, "new_disk_token");
+    }
+
+    #[test]
+    fn test_validate_keyring_secret_for_sync_headless() {
+        let valid_oauth = br#"{"access_token":"ya29.valid_oauth_token_12345678901234567890"}"#;
+        // 1. Empty keyring secret with valid oauth bytes must pass (headless Linux)
+        assert!(validate_keyring_secret_for_sync("", Some(valid_oauth)).is_ok());
+        assert!(validate_keyring_secret_for_sync("   ", Some(valid_oauth)).is_ok());
+
+        // 2. Empty keyring secret with missing or invalid oauth bytes must fail
+        assert!(validate_keyring_secret_for_sync("", None).is_err());
+        assert!(validate_keyring_secret_for_sync("", Some(b"not_json")).is_err());
+        assert!(
+            validate_keyring_secret_for_sync("", Some(b"{\"access_token\":\"short\"}")).is_err()
+        );
+
+        // 3. Valid keyring secret passes regardless
+        let valid_keyring = r#"{"auth_method":"consumer","token":{"access_token":"ya29.valid_keyring_token_12345678901234567890"}}"#;
+        assert!(validate_keyring_secret_for_sync(valid_keyring, None).is_ok());
     }
 }

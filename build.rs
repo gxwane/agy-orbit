@@ -4,14 +4,12 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    // Host/target dual-gate: only compile PE resource for Windows target
+    // Target-gate: only compile PE resource when target OS is Windows
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        #[cfg(target_os = "windows")]
         compile_windows_pe_resources();
     }
 }
 
-#[cfg(target_os = "windows")]
 fn compile_windows_pe_resources() {
     let mut res = winres::WindowsResource::new();
 

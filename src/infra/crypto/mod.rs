@@ -1,7 +1,7 @@
 #[cfg(target_os = "windows")]
 pub mod dpapi_windows;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(any(test, not(target_os = "windows")))]
 pub mod posix;
 
 use crate::ports::vault::VaultPort;
@@ -15,6 +15,6 @@ pub fn create_default_vault() -> Arc<dyn VaultPort> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Arc::new(posix::PosixVault)
+        Arc::new(posix::PosixVault::new())
     }
 }
