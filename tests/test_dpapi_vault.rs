@@ -5,7 +5,7 @@ fn test_vault_roundtrip_unicode_and_large_payload() {
     let vault = create_default_vault();
 
     // 1. Test Unicode and JSON payloads
-    let plaintext = r#"{"refresh_token": "ya29.a0AfH6SM...日本語测试🔐", "client_id": "google"}"#;
+    let plaintext = r#"{"refresh_token": "mock_refresh_token_test_unicode_日本語测试🔐", "client_id": "mock_client_id"}"#;
     let sealed = vault.seal(plaintext.as_bytes()).expect("Sealing failed");
     assert_ne!(sealed, plaintext.as_bytes());
 

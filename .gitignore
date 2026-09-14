@@ -29,6 +29,26 @@ AGENTS.md
 *.cert
 *.enc
 
+# Antigravity Managed Targets & WAL Journal (Accidental copy prevention)
+oauth_creds.json
+*oauth_creds*.json
+google_accounts.json
+*google_accounts*.json
+journal.json
+*journal*.json
+*.wal
+*.journal
+
+# Locks, Logs & Runtime Metadata (Keep Cargo.lock tracked)
+*.lock
+!Cargo.lock
+*.lease
+*.log
+session.lock
+session.json
+quota_*.json
+*.cache.json
+
 # Local Runtimes & Test Artifacts
 profiles.migrated.bak/
 profiles.migrated.bak
