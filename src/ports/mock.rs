@@ -140,6 +140,21 @@ impl StoragePort for MockStorage {
         Ok((snap.clone(), sealed.clone()))
     }
 
+    fn update_orbit_snapshot(
+        &self,
+        name: &OrbitName,
+        snapshot: &CredentialSnapshot,
+        sealed_secret: &[u8],
+    ) -> Result<()> {
+        let mut orbits = self.orbits.lock().unwrap();
+        let entry = orbits
+            .get_mut(name.as_str())
+            .ok_or_else(|| OrbitError::OrbitNotFound(name.to_string()))?;
+        entry.0 = snapshot.clone();
+        entry.2 = sealed_secret.to_vec();
+        Ok(())
+    }
+
     fn remove_orbit(&self, name: &OrbitName) -> Result<()> {
         self.orbits.lock().unwrap().remove(name.as_str());
         Ok(())
@@ -159,6 +174,11 @@ impl StoragePort for MockStorage {
     }
 
     fn clear_journal(&self) -> Result<()> {
+        *self.journal.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn quarantine_corrupted_journal(&self) -> Result<()> {
         *self.journal.lock().unwrap() = None;
         Ok(())
     }

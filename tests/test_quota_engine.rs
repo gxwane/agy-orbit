@@ -1,12 +1,12 @@
 mod common;
 
-use agy_orbit::app::{QuotaQueryOptions, QuotaService, SnapshotService};
+use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService};
 use agy_orbit::domain::quota::{QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary};
 use agy_orbit::error::{OrbitError, Result};
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::quota::FileQuotaCacheAdapter;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
-use agy_orbit::ports::mock::MockKeyring;
+use agy_orbit::ports::mock::{MockKeyring, MockLeasePort};
 use agy_orbit::ports::quota::{QuotaCachePort, QuotaPort};
 use agy_orbit::ports::KeyringPort;
 use chrono::{Duration, Utc};
@@ -196,7 +196,8 @@ fn test_quota_service_named_orbit_snapshot() {
     sandbox.write_active_credentials("work_oauth_token_99999", "work@company.com");
     keyring.set_secret("work_secret").unwrap();
 
-    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
+    let lease = MockLeasePort::default();
+    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
     snap_svc
         .save("work", Some("Work Account".into()), false)
         .unwrap();
@@ -273,4 +274,156 @@ fn test_quota_service_network_error_without_cache() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("Connection refused"));
+}
+
+#[test]
+fn test_quota_expired_token_fails_fast_with_remediation_guidance() {
+    let _sandbox = TestSandbox::new();
+    let keyring = MockKeyring::default();
+    let expired_keyring_json = r#"{
+        "auth_method": "consumer",
+        "id_token": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ICJvcmJpdDFAZXhhbXBsZS5jb20ifQ.sig",
+        "token": {
+            "access_token": "expired_token_12345678901234567890",
+            "token_type": "Bearer",
+            "refresh_token": "valid_refresh_token_1234567890",
+            "expiry": "2026-01-01T00:00:00Z"
+        }
+    }"#;
+    keyring.set_secret(expired_keyring_json).unwrap();
+
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let vault = create_default_vault();
+    let lease = MockLeasePort::default();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("pure_orbit", None, false).unwrap();
+
+    let quota_call_count = Arc::new(AtomicUsize::new(0));
+    let mock_quota = MockQuotaPort {
+        call_count: quota_call_count.clone(),
+        mode: MockMode::Unauthorized,
+    };
+
+    let cache_port = FileQuotaCacheAdapter;
+    let service = QuotaService::new(&target, &storage, &mock_quota, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    let result = service.query_quota(QuotaQueryOptions {
+        orbit: Some("pure_orbit".into()),
+        refresh: true,
+    });
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("HTTP 401") || err_msg.contains("expired"),
+        "Must report 401 expired error: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("agy"),
+        "Must provide remediation guidance to run agy: {err_msg}"
+    );
+    assert_eq!(quota_call_count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_quota_empty_token_fails_fast_without_network_request() {
+    let sandbox = TestSandbox::new();
+    sandbox.write_active_credentials("", "empty@example.com");
+
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let quota_call_count = Arc::new(AtomicUsize::new(0));
+    let mock_quota = MockQuotaPort {
+        call_count: quota_call_count.clone(),
+        mode: MockMode::Unauthorized,
+    };
+
+    let cache_port = FileQuotaCacheAdapter;
+    let service = QuotaService::new(&target, &storage, &mock_quota, &cache_port);
+
+    let result = service.query_quota(QuotaQueryOptions {
+        orbit: None,
+        refresh: true,
+    });
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("No valid access token")
+            || err_msg.contains("empty")
+            || err_msg.contains("missing"),
+        "Must report empty token error: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("agy"),
+        "Must provide remediation guidance: {err_msg}"
+    );
+    assert_eq!(
+        quota_call_count.load(Ordering::SeqCst),
+        0,
+        "Must fail fast before initiating network request"
+    );
+}
+
+#[test]
+fn test_query_all_quotas_fault_isolation() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let b64_payloads = [
+        ("orbit_a", "eyJlbWFpbCI6Im9yYml0X2FAZXhhbXBsZS5jb20ifQ"),
+        ("orbit_b", "eyJlbWFpbCI6Im9yYml0X2JAZXhhbXBsZS5jb20ifQ"),
+        ("orbit_c", "eyJlbWFpbCI6Im9yYml0X2NAZXhhbXBsZS5jb20ifQ"),
+    ];
+
+    for (name, payload_b64) in &b64_payloads {
+        let secret = format!(
+            r#"{{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.{payload_b64}.sig","token":{{"access_token":"tok_{name}","token_type":"Bearer","refresh_token":"rf_{name}"}}}}"#
+        );
+        keyring.set_secret(&secret).unwrap();
+        let snap_service =
+            SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+        snap_service.save(name, None, false).unwrap();
+    }
+
+    struct MultiMockQuotaPort;
+    impl QuotaPort for MultiMockQuotaPort {
+        fn fetch_user_quota(&self, access_token: &str) -> Result<QuotaSummary> {
+            if access_token.contains("orbit_b") {
+                Err(OrbitError::CredentialValidation(
+                    "Access token expired or unauthorized (HTTP 401). Run `agy` to refresh.".into(),
+                ))
+            } else {
+                Ok(sample_quota_summary())
+            }
+        }
+    }
+
+    let cache_port = FileQuotaCacheAdapter;
+    let service = QuotaService::new(&target, &storage, &MultiMockQuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    let rows = service
+        .query_all_quotas(true)
+        .expect("query_all_quotas must not fail even if orbit_b fails");
+
+    assert_eq!(rows.len(), 3);
+
+    let row_a = rows.iter().find(|r| r.orbit_name == "orbit_a").unwrap();
+    assert!(row_a.gemini_5h_pct.is_some());
+
+    let row_b = rows.iter().find(|r| r.orbit_name == "orbit_b").unwrap();
+    assert!(row_b.gemini_5h_pct.is_none());
+    assert!(matches!(row_b.status, RowStatus::AuthExpired(_)));
+
+    let row_c = rows.iter().find(|r| r.orbit_name == "orbit_c").unwrap();
+    assert!(row_c.gemini_5h_pct.is_some());
 }

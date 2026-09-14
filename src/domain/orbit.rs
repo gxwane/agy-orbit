@@ -9,10 +9,15 @@ use std::fmt;
 #[serde(try_from = "String", into = "String")]
 pub struct OrbitName(String);
 
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 impl OrbitName {
     pub fn new<S: AsRef<str>>(name: S) -> Result<Self> {
         let s = name.as_ref().trim();
-        if s.is_empty() || s.len() > 64 {
+        if s.is_empty() || s.len() > 64 || s.starts_with('-') {
             return Err(OrbitError::InvalidOrbitName(s.to_string()));
         }
 
@@ -21,6 +26,11 @@ impl OrbitName {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !valid_chars || s == "." || s == ".." {
+            return Err(OrbitError::InvalidOrbitName(s.to_string()));
+        }
+
+        let upper = s.to_ascii_uppercase();
+        if WINDOWS_RESERVED.contains(&upper.as_str()) {
             return Err(OrbitError::InvalidOrbitName(s.to_string()));
         }
 
@@ -123,5 +133,10 @@ mod tests {
         assert!(OrbitName::new("   ").is_err());
         let too_long = "a".repeat(65);
         assert!(OrbitName::new(&too_long).is_err());
+        assert!(OrbitName::new("-leading").is_err());
+        assert!(OrbitName::new("CON").is_err());
+        assert!(OrbitName::new("aux").is_err());
+        assert!(OrbitName::new("nul").is_err());
+        assert!(OrbitName::new("com1").is_err());
     }
 }

@@ -1,7 +1,10 @@
-use crate::app::quota::QuotaViewData;
+use crate::app::quota::{MultiQuotaRowData, QuotaViewData, RowStatus};
 use crate::domain::quota::QuotaBucket;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::{Cell, Color, Row, Table};
 
 const BAR_WIDTH: usize = 20;
 
@@ -73,6 +76,144 @@ pub fn render_quota_view(data: &QuotaViewData) {
             format!("{}m ago", age.num_minutes())
         };
         println!("  {}", format!("Last updated: {age_str}").dimmed());
+    }
+    println!();
+}
+
+/// Render a subtle ergonomics tip if the user has multiple orbits configured.
+pub fn render_quota_tip_if_multiple(total_orbits: usize) {
+    if total_orbits > 1 {
+        println!(
+            "{}",
+            "Tip: Run 'agyo quota -a' to inspect all accounts at a glance.".dimmed()
+        );
+        println!();
+    }
+}
+
+/// Render aggregated multi-account quota dashboard table.
+pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
+    if rows.is_empty() {
+        println!("No orbits found to display quota.");
+        return;
+    }
+
+    println!();
+    println!(
+        "{}",
+        "Antigravity Multi-Account Quota Dashboard".bold().cyan()
+    );
+    println!();
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            Cell::new("Orbit").fg(Color::Cyan),
+            Cell::new("Account").fg(Color::Cyan),
+            Cell::new("Gemini 5h").fg(Color::Cyan),
+            Cell::new("Gemini Wk").fg(Color::Cyan),
+            Cell::new("Claude 5h").fg(Color::Cyan),
+            Cell::new("Claude Wk").fg(Color::Cyan),
+            Cell::new("Status").fg(Color::Cyan),
+            Cell::new("Next Reset").fg(Color::Cyan),
+        ]);
+
+    for row in rows {
+        let orbit_name = if row.is_active {
+            format!("* {}", row.orbit_name)
+        } else {
+            format!("  {}", row.orbit_name)
+        };
+
+        let orbit_cell = if row.is_active {
+            Cell::new(orbit_name).fg(Color::Green)
+        } else {
+            Cell::new(orbit_name)
+        };
+
+        let email_str = row.account_email.as_deref().unwrap_or("unknown");
+        let email_cell = Cell::new(email_str);
+
+        let g5_cell = format_pct_cell(row.gemini_5h_pct);
+        let gw_cell = format_pct_cell(row.gemini_wk_pct);
+        let c5_cell = format_pct_cell(row.claude_5h_pct);
+        let cw_cell = format_pct_cell(row.claude_wk_pct);
+
+        let (status_str, status_color) = match &row.status {
+            RowStatus::Active => ("Active", Color::Green),
+            RowStatus::Fresh => ("Fresh", Color::Green),
+            RowStatus::Cached => ("Cached", Color::Yellow),
+            RowStatus::Refreshed => ("Refreshed", Color::Cyan),
+            RowStatus::AuthExpired(_) => ("Auth Expired", Color::Red),
+            RowStatus::Error(_) => ("Error", Color::Red),
+        };
+        let status_cell = Cell::new(status_str).fg(status_color);
+
+        let reset_str = match row.next_reset {
+            Some(reset) => format_countdown(reset),
+            None => "-".to_string(),
+        };
+        let reset_cell = Cell::new(reset_str);
+
+        table.add_row(Row::from(vec![
+            orbit_cell,
+            email_cell,
+            g5_cell,
+            gw_cell,
+            c5_cell,
+            cw_cell,
+            status_cell,
+            reset_cell,
+        ]));
+    }
+
+    println!("{table}");
+    println!(
+        "{} {}",
+        "*".green().bold(),
+        "Indicates currently active Orbit".dimmed()
+    );
+
+    // If any row has AuthExpired or Error, show detail warnings below table
+    for row in rows {
+        match &row.status {
+            RowStatus::AuthExpired(msg) => {
+                println!(
+                    "{} Orbit '{}': {}",
+                    "⚠ Warning:".yellow().bold(),
+                    row.orbit_name.bold(),
+                    msg.yellow()
+                );
+            }
+            RowStatus::Error(msg) => {
+                println!(
+                    "{} Orbit '{}': {}",
+                    "⚠ Warning:".yellow().bold(),
+                    row.orbit_name.bold(),
+                    msg.yellow()
+                );
+            }
+            _ => {}
+        }
+    }
+    println!();
+}
+
+fn format_pct_cell(pct_opt: Option<f64>) -> Cell {
+    match pct_opt {
+        Some(pct) => {
+            let s = format!("{:>5.1}%", pct);
+            if pct >= 50.0 {
+                Cell::new(s).fg(Color::Green)
+            } else if pct >= 20.0 {
+                Cell::new(s).fg(Color::Yellow)
+            } else {
+                Cell::new(s).fg(Color::Red)
+            }
+        }
+        None => Cell::new("    -").fg(Color::DarkGrey),
     }
 }
 

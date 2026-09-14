@@ -36,7 +36,7 @@
 | `agyo list` | `ls` | 格式化表格展示所有已保存轨道、邮箱、标签及激活状态 |
 | `agyo whoami` | `w` | 查看当前系统中活跃的 Google 账号详情 |
 | `agyo run <orbit> -- <cmd...>` | `r` | 持有生命周期排他租约运行子进程，退出时反向同步最新 Token |
-| `agyo quota [orbit]` | `q` | 查询各模型池的配额水位（Session/Weekly 百分比及倒计时） |
+| `agyo quota [orbit] [-a] [-r]` | `q` | 查询各模型池配额水位（支持单账号或 `-a` 全量多账号聚合大盘与倒计时） |
 | `agyo remove <orbit>` | `rm` | 安全删除指定轨道及其快照 |
 
 ---

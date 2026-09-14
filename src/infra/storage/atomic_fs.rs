@@ -33,7 +33,27 @@ pub fn atomic_write<P: AsRef<Path>, C: AsRef<[u8]>>(dest: P, contents: C) -> Res
         let _ = fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600));
     }
 
-    temp.persist(dest).map_err(|e| e.error)?;
+    let persist_res = temp.persist(dest);
+    if let Err(mut persist_err) = persist_res {
+        let is_retryable = persist_err
+            .error
+            .raw_os_error()
+            .is_some_and(|code| code == 32 || code == 5);
+
+        if is_retryable {
+            for attempt in 1..=3 {
+                std::thread::sleep(std::time::Duration::from_millis(10 * (1 << attempt)));
+                match persist_err.file.persist(dest) {
+                    Ok(_) => return Ok(()),
+                    Err(next_err) => {
+                        persist_err = next_err;
+                    }
+                }
+            }
+        }
+
+        return Err(persist_err.error.into());
+    }
     Ok(())
 }
 

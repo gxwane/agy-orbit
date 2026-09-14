@@ -4,7 +4,7 @@ use agy_orbit::domain::lease::LeaseRecord;
 use agy_orbit::domain::orbit::OrbitName;
 use agy_orbit::error::OrbitError;
 use agy_orbit::infra::lease::KernelFileLock;
-use agy_orbit::infra::storage::paths::get_lease_path;
+use agy_orbit::infra::storage::paths::get_lease_meta_path;
 use agy_orbit::ports::lease::LeasePort;
 use common::sandbox::TestSandbox;
 use std::fs;
@@ -14,8 +14,8 @@ fn test_lease_acquisition_and_drop_release() {
     let _sandbox = TestSandbox::new();
     let lease_mgr = KernelFileLock;
 
-    let lease_path = get_lease_path().unwrap();
-    assert!(!lease_path.exists());
+    let meta_path = get_lease_meta_path().unwrap();
+    assert!(!meta_path.exists());
 
     let record1 = LeaseRecord::new(
         std::process::id(),
@@ -28,7 +28,7 @@ fn test_lease_acquisition_and_drop_release() {
         .try_acquire_lease(&record1)
         .expect("Failed to acquire initial lease");
 
-    assert!(lease_path.exists());
+    assert!(meta_path.exists());
 
     // Concurrently attempting to acquire another lease must be rejected
     let record2 = LeaseRecord::new(
@@ -46,8 +46,12 @@ fn test_lease_acquisition_and_drop_release() {
     drop(guard);
 
     assert!(
-        !lease_path.exists(),
-        "Lease file should be cleaned up on drop"
+        !meta_path.exists(),
+        "Lease metadata file should be cleaned up on drop"
+    );
+    assert!(
+        lease_mgr.check_active_lease().unwrap().is_none(),
+        "Active lease should be none after drop"
     );
 
     // Can now acquire again
@@ -62,12 +66,12 @@ fn test_stale_pid_lease_takeover() {
     let _sandbox = TestSandbox::new();
     let lease_mgr = KernelFileLock;
 
-    let lease_path = get_lease_path().unwrap();
-    fs::create_dir_all(lease_path.parent().unwrap()).unwrap();
+    let meta_path = get_lease_meta_path().unwrap();
+    fs::create_dir_all(meta_path.parent().unwrap()).unwrap();
 
     // Fabricate a stale lease record with a dead PID (e.g. 99999999)
     let stale_record = r#"{"orbit_name": "work", "pid": 99999999, "cmd": ["crashed-process"], "acquired_at": "2026-01-01T00:00:00Z"}"#;
-    fs::write(&lease_path, stale_record).unwrap();
+    fs::write(&meta_path, stale_record).unwrap();
 
     let record = LeaseRecord::new(
         std::process::id(),
@@ -75,12 +79,13 @@ fn test_stale_pid_lease_takeover() {
         vec!["new-active-process".into()],
     );
 
-    // Since PID 99999999 does not exist, try_acquire_lease must recognize it as stale and succeed
+    // Since PID 99999999 does not hold the kernel lock, try_acquire_lease must succeed
     let guard = lease_mgr
         .try_acquire_lease(&record)
         .expect("Should take over stale lease from dead PID");
 
-    assert!(lease_path.exists());
+    assert!(meta_path.exists());
     drop(guard);
-    assert!(!lease_path.exists());
+    assert!(!meta_path.exists());
+    assert!(lease_mgr.check_active_lease().unwrap().is_none());
 }

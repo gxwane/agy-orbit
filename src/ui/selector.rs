@@ -1,4 +1,3 @@
-use colored::Colorize;
 use inquire::{error::InquireError, Select};
 use std::io::IsTerminal;
 
@@ -23,6 +22,23 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct OrbitChoice<'a> {
+    pub name: &'a str,
+    pub email: &'a str,
+    pub is_active: bool,
+}
+
+impl<'a> std::fmt::Display for OrbitChoice<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_active {
+            write!(f, "[active] {} ({})", self.name, self.email)
+        } else {
+            write!(f, "         {} ({})", self.name, self.email)
+        }
+    }
+}
+
 /// Prompt the user with an interactive TUI selector to switch Orbits.
 /// Returns:
 /// - `Ok(Some(name))` if user selected an Orbit
@@ -36,14 +52,12 @@ pub fn select_orbit_interactive<'a>(
         return Ok(None);
     }
 
-    let items: Vec<String> = orbits
+    let items: Vec<OrbitChoice<'a>> = orbits
         .iter()
-        .map(|(name, email)| {
-            if active_orbit == Some(*name) {
-                format!("● {} ({}) [active]", name.bold().green(), email.cyan())
-            } else {
-                format!("○ {} ({})", name, email)
-            }
+        .map(|(name, email)| OrbitChoice {
+            name,
+            email,
+            is_active: active_orbit == Some(*name),
         })
         .collect();
 
@@ -58,14 +72,5 @@ pub fn select_orbit_interactive<'a>(
         .with_help_message("↑/k: up • ↓/j: down • Enter: select • Esc/q: cancel")
         .prompt_skippable()?;
 
-    match ans {
-        Some(selected_str) => {
-            let idx = orbits
-                .iter()
-                .position(|(name, _)| selected_str.contains(name))
-                .unwrap_or(0);
-            Ok(Some(orbits[idx].0))
-        }
-        None => Ok(None),
-    }
+    Ok(ans.map(|choice| choice.name))
 }

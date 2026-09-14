@@ -3,6 +3,7 @@ mod common;
 use agy_orbit::app::RecoveryService;
 use agy_orbit::domain::journal::{JournalEntry, StoredSnapshot, TransactionPhase};
 use agy_orbit::domain::orbit::OrbitName;
+use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
 use agy_orbit::ports::keyring::KeyringPort;
 use agy_orbit::ports::mock::MockKeyring;
@@ -16,6 +17,7 @@ fn test_wal_auto_recovery_from_applied_crash() {
     let target = TargetAdapter;
     let storage = FileStorage;
     let keyring = MockKeyring::default();
+    let vault = create_default_vault();
 
     // 1. Write initial state: active account is currently corrupted/partial
     sandbox.write_active_credentials("half-applied-token", "corrupted@example.com");
@@ -26,10 +28,12 @@ fn test_wal_auto_recovery_from_applied_crash() {
     let mut journal = JournalEntry::new(
         "tx-crash-999".into(),
         OrbitName::new("personal").unwrap(),
+        Some(OrbitName::new("work").unwrap()),
         Some(StoredSnapshot {
             oauth_creds: Some(r#"{"access_token": "work-valid-token"}"#.into()),
             google_accounts: Some(r#"{"active": "work@company.com", "old": []}"#.into()),
-            keyring_secret: "work-valid-secret".into(),
+            keyring_secret: Some("work-valid-secret".into()),
+            sealed_keyring_secret: None,
         }),
     );
     journal.phase = TransactionPhase::Applied;
@@ -38,7 +42,7 @@ fn test_wal_auto_recovery_from_applied_crash() {
     assert!(storage.read_journal().unwrap().is_some());
 
     // 3. Instantiate RecoveryService and run auto-heal
-    let recovery = RecoveryService::new(&target, &keyring, &storage);
+    let recovery = RecoveryService::new(&target, &keyring, vault.as_ref(), &storage);
     let healed = recovery
         .auto_heal_if_needed()
         .expect("Auto-heal should succeed");

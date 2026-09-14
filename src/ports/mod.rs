@@ -1,5 +1,6 @@
 pub mod keyring;
 pub mod lease;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod mock;
 pub mod quota;
 pub mod storage;

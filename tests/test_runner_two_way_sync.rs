@@ -26,7 +26,7 @@ fn test_runner_executes_and_syncs_refreshed_token() {
     );
     keyring.set_secret("personal_secret").unwrap();
 
-    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
+    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
     snap_svc
         .save("personal", Some("Personal Orbit".into()), false)
         .unwrap();

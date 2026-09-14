@@ -1,6 +1,6 @@
 mod common;
 
-use agy_orbit::app::MigrationService;
+use agy_orbit::infra::storage::MigrationService;
 use common::sandbox::TestSandbox;
 use std::fs;
 

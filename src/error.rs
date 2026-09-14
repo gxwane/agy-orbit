@@ -45,8 +45,14 @@ pub enum OrbitError {
     #[error("Quota API error: {0}")]
     QuotaHttp(String),
 
-    #[error("Google Quota API rate limit exceeded (HTTP 429)")]
+    #[error("Google Quota API rate limit exceeded (HTTP 429){}", .retry_after_secs.map(|s| format!(": retry after {s}s")).unwrap_or_default())]
     QuotaRateLimited { retry_after_secs: Option<u64> },
+
+    #[error("Transaction WAL journal corrupted: {0}")]
+    TransactionJournalCorrupted(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

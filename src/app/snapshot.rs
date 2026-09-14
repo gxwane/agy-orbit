@@ -1,6 +1,8 @@
+use crate::domain::credentials::CredentialSnapshot;
 use crate::domain::orbit::{OrbitMetadata, OrbitName, OrbitRecord};
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
+use crate::ports::lease::LeasePort;
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 use crate::ports::vault::VaultPort;
@@ -11,6 +13,7 @@ pub struct SnapshotService<'a> {
     pub keyring: &'a dyn KeyringPort,
     pub vault: &'a dyn VaultPort,
     pub storage: &'a dyn StoragePort,
+    pub lease: &'a dyn LeasePort,
 }
 
 impl<'a> SnapshotService<'a> {
@@ -19,12 +22,14 @@ impl<'a> SnapshotService<'a> {
         keyring: &'a dyn KeyringPort,
         vault: &'a dyn VaultPort,
         storage: &'a dyn StoragePort,
+        lease: &'a dyn LeasePort,
     ) -> Self {
         Self {
             target,
             keyring,
             vault,
             storage,
+            lease,
         }
     }
 
@@ -36,6 +41,14 @@ impl<'a> SnapshotService<'a> {
         force: bool,
     ) -> Result<OrbitMetadata> {
         let orbit_name = OrbitName::new(name_str)?;
+
+        // Guard against saving while another process is actively running a session
+        if let Some(active_lease) = self.lease.check_active_lease()? {
+            return Err(OrbitError::LeaseActive {
+                pid: active_lease.pid,
+                orbit: active_lease.orbit_name.to_string(),
+            });
+        }
 
         let has_keyring = self
             .keyring
@@ -53,8 +66,12 @@ impl<'a> SnapshotService<'a> {
             return Err(OrbitError::OrbitAlreadyExists(orbit_name.to_string()));
         }
 
-        // Capture active credentials
-        let snapshot = self.target.capture_active(self.keyring)?;
+        // Capture active credentials cleanly without cross-port coupling
+        let oauth = self.target.read_oauth_creds()?;
+        let accounts = self.target.read_google_accounts()?;
+        let secret = self.keyring.get_secret().unwrap_or_default();
+        let snapshot = CredentialSnapshot::new(oauth, accounts, secret);
+
         let email = snapshot.extract_active_email().ok_or_else(|| {
             OrbitError::AuthFileMissing(
                 "No active Google email found in keyring or accounts".into(),
@@ -96,6 +113,17 @@ impl<'a> SnapshotService<'a> {
     /// Remove a named Orbit.
     pub fn remove(&self, name_str: &str) -> Result<()> {
         let orbit_name = OrbitName::new(name_str)?;
+
+        // Prevent removing an Orbit that is currently actively leased by a process
+        if let Some(active_lease) = self.lease.check_active_lease()? {
+            if active_lease.orbit_name == orbit_name {
+                return Err(OrbitError::LeaseActive {
+                    pid: active_lease.pid,
+                    orbit: active_lease.orbit_name.to_string(),
+                });
+            }
+        }
+
         let mut index = self.storage.load_index()?;
 
         if !index.orbits.contains_key(orbit_name.as_str()) {
@@ -117,7 +145,7 @@ impl<'a> SnapshotService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::mock::{MockKeyring, MockStorage, MockTarget, MockVault};
+    use crate::ports::mock::{MockKeyring, MockLeasePort, MockStorage, MockTarget, MockVault};
 
     #[test]
     fn test_snapshot_service_save_and_remove() {
@@ -125,6 +153,7 @@ mod tests {
         let keyring = MockKeyring::default();
         let vault = MockVault;
         let storage = MockStorage::default();
+        let lease = MockLeasePort::default();
 
         // Seed target
         target.write_oauth_creds(br#"{"token": "xyz"}"#).unwrap();
@@ -133,7 +162,7 @@ mod tests {
             .unwrap();
         keyring.set_secret("my_secret_token").unwrap();
 
-        let service = SnapshotService::new(&target, &keyring, &vault, &storage);
+        let service = SnapshotService::new(&target, &keyring, &vault, &storage, &lease);
 
         // Save
         let meta = service

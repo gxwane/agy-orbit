@@ -2,8 +2,8 @@ use clap::{CommandFactory, Parser};
 use colored::Colorize;
 
 use agy_orbit::app::{
-    MigrationService, QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions,
-    RunService, SnapshotService, SwitchService,
+    QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions, RunService,
+    SnapshotService, SwitchService,
 };
 use agy_orbit::cli::{Cli, Commands};
 use agy_orbit::error::Result;
@@ -11,12 +11,15 @@ use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
-use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
+use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
 use agy_orbit::ports::StoragePort;
 use agy_orbit::ui::{
-    install_terminal_panic_hook, is_interactive, render_orbits_table, render_quota_view,
-    render_success, render_whoami, select_orbit_interactive,
+    detect_current_shell, emit_completion_script, install_terminal_panic_hook, is_interactive,
+    render_completion_guide, render_multi_quota_table, render_orbits_table,
+    render_quota_tip_if_multiple, render_quota_view, render_success, render_whoami,
+    select_orbit_interactive,
 };
+use std::io::IsTerminal;
 
 fn main() {
     // 0. Install panic hook to ensure terminal raw mode and cursor are always restored
@@ -74,7 +77,7 @@ fn run_app() -> Result<()> {
     let lease = KernelFileLock;
 
     // 3. Startup auto-recovery: check for uncommitted WAL transactions and heal
-    let recovery = RecoveryService::new(&target, &keyring, &storage);
+    let recovery = RecoveryService::new(&target, &keyring, vault.as_ref(), &storage);
     if let Err(e) = recovery.auto_heal_if_needed() {
         eprintln!("{} Warning during auto-recovery check: {e}", "⚠".yellow());
     }
@@ -82,7 +85,7 @@ fn run_app() -> Result<()> {
     // 4. Dispatch commands to Application Services
     match cli.command {
         Some(Commands::Save { name, label, force }) => {
-            let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
+            let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
             let meta = service.save(&name, label, force)?;
             render_success(&format!(
                 "Orbit '{}' ({}) successfully saved and set as active.",
@@ -114,7 +117,7 @@ fn run_app() -> Result<()> {
             Ok(())
         }
         Some(Commands::Remove { name }) => {
-            let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
+            let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
             service.remove(&name)?;
             render_success(&format!("Orbit '{}' has been removed.", name.bold()));
             Ok(())
@@ -128,22 +131,39 @@ fn run_app() -> Result<()> {
             })?;
             std::process::exit(exit_code);
         }
-        Some(Commands::Quota { name, refresh }) => {
+        Some(Commands::Quota { name, refresh, all }) => {
             let quota_port = CloudCodeQuotaAdapter::new();
             let cache_port = FileQuotaCacheAdapter;
             let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
                 .with_keyring(&keyring)
                 .with_vault(vault.as_ref());
-            let view_data = service.query_quota(QuotaQueryOptions {
-                orbit: name,
-                refresh,
-            })?;
-            render_quota_view(&view_data);
+
+            if all {
+                let rows = service.query_all_quotas(refresh)?;
+                render_multi_quota_table(&rows);
+            } else {
+                let view_data = service.query_quota(QuotaQueryOptions {
+                    orbit: name,
+                    refresh,
+                })?;
+                render_quota_view(&view_data);
+
+                let total_orbits = storage
+                    .load_index()
+                    .map(|idx| idx.orbits.len())
+                    .unwrap_or(0);
+                render_quota_tip_if_multiple(total_orbits);
+            }
             Ok(())
         }
-        Some(Commands::Completions { shell }) => {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "agyo", &mut std::io::stdout());
+        Some(Commands::Completion { shell, raw }) => {
+            let target_shell = shell.unwrap_or_else(detect_current_shell);
+            if std::io::stdout().is_terminal() && !raw && shell.is_none() {
+                render_completion_guide(target_shell);
+            } else {
+                let mut cmd = Cli::command();
+                emit_completion_script(target_shell, &mut cmd, &mut std::io::stdout())?;
+            }
             Ok(())
         }
         Some(Commands::CompleteOrbits) => {
@@ -155,7 +175,7 @@ fn run_app() -> Result<()> {
             Ok(())
         }
         None => {
-            if is_interactive() {
+            if is_interactive() && std::env::var("AGYO_SESSION_ACTIVE").as_deref() != Ok("1") {
                 let query_svc = QueryService::new(&target, &storage).with_keyring(&keyring);
                 let index = query_svc.list()?;
                 let active = index.active_orbit.as_deref();

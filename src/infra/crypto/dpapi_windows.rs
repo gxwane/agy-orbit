@@ -112,8 +112,9 @@ impl VaultPort for DpapiVault {
         }
 
         let result = unsafe {
-            let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
+            let slice = std::slice::from_raw_parts_mut(out_blob.pb_data, out_blob.cb_data as usize);
             let vec = slice.to_vec();
+            slice.fill(0);
             LocalFree(out_blob.pb_data as *mut _);
             vec
         };

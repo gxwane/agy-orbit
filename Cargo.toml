@@ -45,6 +45,13 @@ keyring = { version = "3", features = ["apple-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "linux-native"] }
 
+[features]
+default = []
+test-utils = []
+
+[dev-dependencies]
+agy-orbit = { path = ".", features = ["test-utils"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

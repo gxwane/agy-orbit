@@ -74,6 +74,23 @@ impl StoragePort for FileStorage {
         Ok((snapshot, sealed_secret))
     }
 
+    fn update_orbit_snapshot(
+        &self,
+        name: &OrbitName,
+        snapshot: &CredentialSnapshot,
+        sealed_secret: &[u8],
+    ) -> Result<()> {
+        let orbit_name = name.as_str();
+        if let Some(ref oauth) = snapshot.oauth_creds {
+            atomic_write(get_orbit_oauth_creds_path(orbit_name)?, oauth)?;
+        }
+        if let Some(ref accounts) = snapshot.google_accounts {
+            atomic_write(get_orbit_google_accounts_path(orbit_name)?, accounts)?;
+        }
+        atomic_write(get_orbit_keyring_secret_path(orbit_name)?, sealed_secret)?;
+        Ok(())
+    }
+
     fn remove_orbit(&self, name: &OrbitName) -> Result<()> {
         let orbit_dir = get_orbit_dir(name.as_str())?;
         if orbit_dir.exists() {
@@ -109,6 +126,19 @@ impl StoragePort for FileStorage {
         let path = get_journal_path()?;
         if path.exists() {
             fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    fn quarantine_corrupted_journal(&self) -> Result<()> {
+        let path = get_journal_path()?;
+        if path.exists() {
+            let backup_name = format!(
+                "journal.corrupted.{}.bak",
+                chrono::Utc::now().timestamp_millis()
+            );
+            let backup_path = path.with_file_name(backup_name);
+            let _ = fs::rename(&path, backup_path);
         }
         Ok(())
     }

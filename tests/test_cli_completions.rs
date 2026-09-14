@@ -3,7 +3,7 @@ mod common;
 use agy_orbit::app::SnapshotService;
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
-use agy_orbit::ports::mock::MockKeyring;
+use agy_orbit::ports::mock::{MockKeyring, MockLeasePort};
 use common::sandbox::TestSandbox;
 use std::process::Command;
 use std::time::Instant;
@@ -19,13 +19,13 @@ fn test_cli_completions_all_shells() {
 
     for shell in shells {
         let output = Command::new(&bin)
-            .args(["completions", shell])
+            .args(["completion", shell])
             .output()
-            .unwrap_or_else(|e| panic!("Failed to execute agyo completions {shell}: {e}"));
+            .unwrap_or_else(|e| panic!("Failed to execute agyo completion {shell}: {e}"));
 
         assert!(
             output.status.success(),
-            "Completions failed for shell: {shell}"
+            "Completion failed for shell: {shell}"
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!stdout.is_empty(), "Completion script should not be empty");
@@ -33,7 +33,41 @@ fn test_cli_completions_all_shells() {
             stdout.contains("agyo") || stdout.contains("save"),
             "Completion script for {shell} should mention agyo or subcommands"
         );
+
+        // Verify dynamic orbit completer hook injection
+        if matches!(shell, "powershell" | "bash" | "fish") {
+            assert!(
+                stdout.contains("__complete-orbits"),
+                "Dynamic completer hook missing for {shell}"
+            );
+        }
     }
+
+    // Verify alias 'comp' works identically
+    let output = Command::new(&bin)
+        .args(["comp", "powershell"])
+        .output()
+        .expect("Failed to execute agyo comp powershell");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Register-ArgumentCompleter"));
+    assert!(stdout.contains("__complete-orbits"));
+
+    // Verify 'completions' is removed and cleanly rejected
+    let output = Command::new(&bin)
+        .args(["completions", "powershell"])
+        .output()
+        .expect("Failed to execute agyo completions");
+    assert!(!output.status.success());
+
+    // Verify pipe/non-tty auto-detection when no shell is passed
+    let output = Command::new(&bin)
+        .arg("completion")
+        .output()
+        .expect("Failed to execute agyo completion with auto-detection");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty());
 }
 
 #[test]
@@ -43,13 +77,14 @@ fn test_cli_dynamic_orbit_completion_speed_and_isolation() {
     let keyring = MockKeyring::default();
     let vault = create_default_vault();
     let storage = FileStorage;
+    let lease = MockLeasePort::default();
 
     use agy_orbit::ports::KeyringPort;
 
     // Save two orbits
     sandbox.write_active_credentials("token_1", "work@company.com");
     keyring.set_secret("work_secret").unwrap();
-    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage);
+    let snap_svc = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
     snap_svc
         .save("work", Some("Work Orbit".into()), false)
         .unwrap();

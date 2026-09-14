@@ -36,5 +36,5 @@ English | [简体中文](README_zh.md)
 - **`agyo list`** (别名: `ls`)：直观展示所有保存的轨道、对应邮箱、最后使用时间及当前激活项。
 - **`agyo whoami`** (别名: `w`)：快速查看当前活动账号详情。
 - **`agyo run <orbit-name> -- <cmd...>`** (别名: `r`)：以目标轨道启动并持有生命周期排他租约，退出时自动反向同步最新 Refresh Token。
-- **`agyo quota`** (别名: `q`)：实时查询各账号模型的剩余请求配额与重置时间。
+- **`agyo quota [orbit] [-a/--all] [-r/--refresh]`** (别名: `q`)：实时查询各账号模型配额与用量大盘（支持单账号或 `-a` 全量多账号聚合大盘与倒计时）。
 - **`agyo remove <orbit-name>`** (别名: `rm`)：安全移除指定轨道。

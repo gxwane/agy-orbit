@@ -23,6 +23,14 @@ pub trait StoragePort: Send + Sync {
     /// Load a snapshot bundle (oauth, accounts, sealed secret) for a named Orbit.
     fn load_orbit_snapshot(&self, name: &OrbitName) -> Result<(CredentialSnapshot, Vec<u8>)>;
 
+    /// Update an existing snapshot bundle (oauth, accounts, sealed secret) for a named Orbit.
+    fn update_orbit_snapshot(
+        &self,
+        name: &OrbitName,
+        snapshot: &CredentialSnapshot,
+        sealed_secret: &[u8],
+    ) -> Result<()>;
+
     /// Remove all snapshot files and metadata for an Orbit.
     fn remove_orbit(&self, name: &OrbitName) -> Result<()>;
 
@@ -37,4 +45,7 @@ pub trait StoragePort: Send + Sync {
 
     /// Remove the WAL journal upon transaction commit or cleanup.
     fn clear_journal(&self) -> Result<()>;
+
+    /// Quarantine an unparseable or corrupted WAL journal to prevent startup deadlocks.
+    fn quarantine_corrupted_journal(&self) -> Result<()>;
 }

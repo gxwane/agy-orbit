@@ -6,6 +6,7 @@ version = 3
 name = "agy-orbit"
 version = "0.1.0"
 dependencies = [
+ "agy-orbit",
  "chrono",
  "clap",
  "clap_complete",

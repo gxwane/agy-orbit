@@ -1,4 +1,3 @@
-use crate::domain::credentials::CredentialSnapshot;
 use crate::error::Result;
 
 /// Port for reading, atomically writing, and safely managing the target Antigravity files in ~/.gemini/.
@@ -20,18 +19,6 @@ pub trait TargetPort: Send + Sync {
 
     /// Safely delete the active google_accounts.json file if present.
     fn delete_google_accounts(&self) -> Result<()>;
-
-    /// Capture all active credentials into a CredentialSnapshot (including keyring).
-    /// If disk files do not exist, they are preserved as None (pure-keyring mode).
-    fn capture_active(
-        &self,
-        keyring: &dyn crate::ports::keyring::KeyringPort,
-    ) -> Result<CredentialSnapshot> {
-        let oauth = self.read_oauth_creds()?;
-        let accounts = self.read_google_accounts()?;
-        let secret = keyring.get_secret()?;
-        Ok(CredentialSnapshot::new(oauth, accounts, secret))
-    }
 
     /// Check if target authentication files exist on disk.
     fn active_exists(&self) -> bool;

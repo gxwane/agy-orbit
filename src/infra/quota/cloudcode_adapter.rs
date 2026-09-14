@@ -5,10 +5,10 @@ use chrono::Utc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_ENDPOINTS: &[&str] = &[
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 ];
 
 const GLOBAL_BUDGET_SECS: u64 = 5;
@@ -47,21 +47,25 @@ impl QuotaPort for CloudCodeQuotaAdapter {
             ));
         }
 
-        let agent = ureq::builder()
-            .try_proxy_from_env(true)
-            .timeout_connect(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout_read(Duration::from_secs(READ_TIMEOUT_SECS))
-            .build();
-
         let deadline = Instant::now() + Duration::from_secs(GLOBAL_BUDGET_SECS);
         let mut last_error = String::from("No endpoints configured");
 
         for endpoint in &self.endpoints {
-            if Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return Err(OrbitError::QuotaHttp(
                     "Network budget exhausted (5.0s timeout) across all quota endpoints.".into(),
                 ));
             }
+
+            let connect_timeout = Duration::from_secs(CONNECT_TIMEOUT_SECS).min(remaining);
+            let read_timeout = Duration::from_secs(READ_TIMEOUT_SECS).min(remaining);
+
+            let agent = ureq::builder()
+                .try_proxy_from_env(true)
+                .timeout_connect(connect_timeout)
+                .timeout_read(read_timeout)
+                .build();
 
             let request = agent
                 .post(endpoint)
@@ -96,7 +100,7 @@ impl QuotaPort for CloudCodeQuotaAdapter {
                 Err(ureq::Error::Status(code, resp)) => {
                     let status_text = resp.status_text().to_string();
                     last_error = format!("HTTP {code} {status_text} from {endpoint}");
-                    // Try next endpoint in cascade (e.g. daily -> prod)
+                    // Try next endpoint in cascade (e.g. prod -> daily)
                     continue;
                 }
                 Err(ureq::Error::Transport(transport_err)) => {

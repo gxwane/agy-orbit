@@ -1,6 +1,7 @@
 use crate::app::SwitchService;
 use crate::domain::credentials::{
-    compute_target_fingerprint, resolve_credentials, CredentialSnapshot, OAuthCreds,
+    compute_target_fingerprint, resolve_credentials, validate_keyring_secret_for_sync,
+    CredentialSnapshot, OAuthCreds,
 };
 use crate::domain::lease::LeaseRecord;
 use crate::domain::orbit::{OrbitMetadata, OrbitName};
@@ -211,6 +212,14 @@ impl<'a> RunService<'a> {
         };
 
         // Check 1: Structure & Semantic Validation (Anti-Torn Write)
+        if let Err(e) = validate_keyring_secret_for_sync(&keyring_secret) {
+            eprintln!(
+                "{} [Two-Way Sync] Warning: invalid keyring secret ({e}). Preserving vault snapshot.",
+                "⚠".yellow()
+            );
+            return Ok(false);
+        }
+
         if let Some(ref oauth) = oauth_bytes {
             let creds: OAuthCreds = match serde_json::from_slice(oauth) {
                 Ok(c) => c,

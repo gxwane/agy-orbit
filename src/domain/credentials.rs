@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Schema for ~/.gemini/oauth_creds.json
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthCreds {
     pub access_token: String,
     #[serde(default)]
@@ -16,6 +16,22 @@ pub struct OAuthCreds {
     pub expiry_date: Option<i64>,
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthCreds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthCreds")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("scope", &self.scope)
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("expiry_date", &self.expiry_date)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl OAuthCreds {
@@ -40,7 +56,7 @@ impl OAuthCreds {
 }
 
 /// Schema for modern Antigravity CLI OS Keyring payload (e.g. WinCred, Keychain)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KeyringPayload {
     #[serde(default)]
     pub auth_method: Option<String>,
@@ -50,8 +66,18 @@ pub struct KeyringPayload {
     pub token: Option<KeyringToken>,
 }
 
+impl std::fmt::Debug for KeyringPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyringPayload")
+            .field("auth_method", &self.auth_method)
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
 /// Token nested object inside KeyringPayload
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KeyringToken {
     #[serde(default)]
     pub access_token: String,
@@ -61,6 +87,58 @@ pub struct KeyringToken {
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub expiry: Option<String>,
+}
+
+impl std::fmt::Debug for KeyringToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyringToken")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expiry", &self.expiry)
+            .finish()
+    }
+}
+
+/// Validate keyring secret structure and semantic sanity before two-way sync back to vault.
+pub fn validate_keyring_secret_for_sync(secret: &str) -> Result<()> {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() {
+        return Err(OrbitError::CredentialValidation(
+            "Keyring secret is empty".into(),
+        ));
+    }
+    if trimmed.starts_with('{') {
+        if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed) {
+            if let Some(token) = payload.token {
+                let at = token.access_token.trim();
+                if at.is_empty() || at.len() < 30 {
+                    return Err(OrbitError::CredentialValidation(
+                        "Keyring access_token is empty or abnormally short (< 30 chars)".into(),
+                    ));
+                }
+                if let Some(ref rt) = token.refresh_token {
+                    let rt_trim = rt.trim();
+                    if rt_trim.is_empty() || rt_trim.len() < 20 {
+                        return Err(OrbitError::CredentialValidation(
+                            "Keyring refresh_token is present but truncated (< 20 chars)".into(),
+                        ));
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if let Ok(oauth) = serde_json::from_str::<OAuthCreds>(trimmed) {
+            return oauth.validate_for_sync();
+        }
+        return Err(OrbitError::CredentialValidation(
+            "Keyring secret contains corrupted/unparseable JSON".into(),
+        ));
+    }
+    Ok(())
 }
 
 const MAX_JWT_LEN: usize = 16 * 1024; // 16 KB hard ceiling for anti-DoS / memory exhaustion
@@ -149,11 +227,24 @@ pub fn extract_email_from_jwt(id_token: &str) -> Option<String> {
 }
 
 /// Resolved active credential identity holding access token, email, and refresh token.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedIdentity {
     pub access_token: String,
     pub email: Option<String>,
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for ResolvedIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedIdentity")
+            .field("access_token", &"[REDACTED]")
+            .field("email", &self.email)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Resolve credentials across Keyring and disk targets with Keyring-first priority.
@@ -253,11 +344,33 @@ pub struct GoogleAccounts {
 /// In-memory bundle representing the 3 authentication targets managed by agy-orbit.
 /// Notice that `oauth_creds` and `google_accounts` are Option<Vec<u8>> to fully support
 /// pure-Keyring systems where disk files do not exist and must NOT be synthetically generated.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CredentialSnapshot {
     pub oauth_creds: Option<Vec<u8>>,
     pub google_accounts: Option<Vec<u8>>,
     pub keyring_secret: String,
+}
+
+impl std::fmt::Debug for CredentialSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialSnapshot")
+            .field(
+                "oauth_creds",
+                &self
+                    .oauth_creds
+                    .as_ref()
+                    .map(|b| format!("[{} bytes]", b.len())),
+            )
+            .field(
+                "google_accounts",
+                &self
+                    .google_accounts
+                    .as_ref()
+                    .map(|b| format!("[{} bytes]", b.len())),
+            )
+            .field("keyring_secret", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Extract active email from raw google_accounts.json bytes
@@ -294,6 +407,79 @@ impl CredentialSnapshot {
                 .and_then(extract_active_email)
         })
     }
+}
+
+/// Update access_token and optionally refresh_token inside a raw keyring secret string.
+pub fn update_secret_tokens(
+    raw_secret: &str,
+    new_access_token: &str,
+    new_refresh_token: Option<&str>,
+) -> Result<String> {
+    let trimmed = raw_secret.trim();
+    if trimmed.is_empty() {
+        return Err(OrbitError::CredentialValidation(
+            "Cannot update access token in empty secret".into(),
+        ));
+    }
+
+    // Try modern KeyringPayload first
+    if let Ok(mut payload) = serde_json::from_str::<KeyringPayload>(trimmed) {
+        if let Some(ref mut token) = payload.token {
+            token.access_token = new_access_token.to_string();
+            if let Some(rt) = new_refresh_token {
+                token.refresh_token = Some(rt.to_string());
+            }
+            token.expiry = Some(chrono::Utc::now().to_rfc3339());
+            return serde_json::to_string(&payload).map_err(|e| {
+                OrbitError::CredentialValidation(format!("Failed to serialize KeyringPayload: {e}"))
+            });
+        }
+    }
+
+    // Try flat OAuthCreds
+    if let Ok(mut oauth) = serde_json::from_str::<OAuthCreds>(trimmed) {
+        oauth.access_token = new_access_token.to_string();
+        if let Some(rt) = new_refresh_token {
+            oauth.refresh_token = Some(rt.to_string());
+        }
+        oauth.expiry_date = Some(chrono::Utc::now().timestamp_millis() + 3600 * 1000);
+        return serde_json::to_string(&oauth).map_err(|e| {
+            OrbitError::CredentialValidation(format!("Failed to serialize OAuthCreds: {e}"))
+        });
+    }
+
+    Err(OrbitError::CredentialValidation(
+        "Unrecognized secret format: cannot update access token".into(),
+    ))
+}
+
+/// Update the access_token inside a raw keyring secret string (either modern KeyringPayload or flat OAuthCreds).
+pub fn update_secret_access_token(raw_secret: &str, new_access_token: &str) -> Result<String> {
+    update_secret_tokens(raw_secret, new_access_token, None)
+}
+
+/// Update access_token and optionally refresh_token in raw disk oauth_creds.json bytes.
+pub fn update_disk_oauth_tokens(
+    oauth_bytes: &[u8],
+    new_access_token: &str,
+    new_refresh_token: Option<&str>,
+) -> Result<Vec<u8>> {
+    let mut oauth: OAuthCreds = serde_json::from_slice(oauth_bytes).map_err(|e| {
+        OrbitError::CredentialValidation(format!("Invalid oauth_creds.json bytes: {e}"))
+    })?;
+    oauth.access_token = new_access_token.to_string();
+    if let Some(rt) = new_refresh_token {
+        oauth.refresh_token = Some(rt.to_string());
+    }
+    oauth.expiry_date = Some(chrono::Utc::now().timestamp_millis() + 3600 * 1000);
+    serde_json::to_vec_pretty(&oauth).map_err(|e| {
+        OrbitError::CredentialValidation(format!("Failed to serialize updated oauth_creds: {e}"))
+    })
+}
+
+/// Update access_token and expiry in raw disk oauth_creds.json bytes.
+pub fn update_disk_oauth_bytes(oauth_bytes: &[u8], new_access_token: &str) -> Result<Vec<u8>> {
+    update_disk_oauth_tokens(oauth_bytes, new_access_token, None)
 }
 
 #[cfg(test)]
@@ -402,5 +588,21 @@ mod tests {
             "ya29.pure_keyring_token_12345678901234567890"
         );
         assert_eq!(resolved.email.as_deref(), Some("pure@gmail.com"));
+    }
+
+    #[test]
+    fn test_update_secret_access_token_keyring() {
+        let original = r#"{"auth_method":"consumer","token":{"access_token":"old_tok","token_type":"Bearer"}}"#;
+        let updated = update_secret_access_token(original, "new_fresh_tok").unwrap();
+        let parsed: KeyringPayload = serde_json::from_str(&updated).unwrap();
+        assert_eq!(parsed.token.unwrap().access_token, "new_fresh_tok");
+    }
+
+    #[test]
+    fn test_update_disk_oauth_bytes() {
+        let original = br#"{"access_token":"old_disk_token"}"#;
+        let updated = update_disk_oauth_bytes(original, "new_disk_token").unwrap();
+        let parsed: OAuthCreds = serde_json::from_slice(&updated).unwrap();
+        assert_eq!(parsed.access_token, "new_disk_token");
     }
 }

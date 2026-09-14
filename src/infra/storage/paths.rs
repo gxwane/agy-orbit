@@ -77,9 +77,19 @@ pub fn get_runtime_dir() -> Result<PathBuf> {
     }
 }
 
-/// Path to the lifetime lease lock file.
+/// Path to the permanent lifetime lease sentinel lock file (never deleted).
+pub fn get_lease_lock_path() -> Result<PathBuf> {
+    Ok(get_runtime_dir()?.join("session.lock"))
+}
+
+/// Path to the lifetime lease metadata file.
+pub fn get_lease_meta_path() -> Result<PathBuf> {
+    Ok(get_runtime_dir()?.join("session.json"))
+}
+
+/// Backward-compatible alias for the sentinel lease lock path.
 pub fn get_lease_path() -> Result<PathBuf> {
-    Ok(get_runtime_dir()?.join("active_session.lease"))
+    get_lease_lock_path()
 }
 
 /// Target active OAuth credentials file (~/.gemini/oauth_creds.json).

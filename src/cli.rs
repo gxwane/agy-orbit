@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "agyo",
+    bin_name = "agyo",
     author,
     version,
     about = "Seamless Multi-Account Manager & Isolated Orbit Runner for Antigravity CLI",
@@ -15,8 +16,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Save current Antigravity credentials as a named Orbit
-    #[command(alias = "s")]
+    /// Save active credentials as a named Orbit
+    #[command(
+        visible_alias = "s",
+        long_about = "Capture current active Antigravity credentials, account metadata, and system keyring secret as a named Orbit snapshot."
+    )]
     Save {
         /// Orbit identifier name (e.g., work, personal)
         name: String,
@@ -31,29 +35,45 @@ pub enum Commands {
     },
 
     /// Switch globally to the specified Orbit
-    #[command(aliases = ["u", "sw"])]
+    #[command(
+        alias = "switch",
+        visible_aliases = ["u", "sw"],
+        long_about = "Atomically update global Antigravity credentials and system keyring target to the specified Orbit using crash-resilient WAL state machine."
+    )]
     Use {
         /// Orbit identifier name to switch to
         name: String,
     },
 
     /// List all saved Orbits
-    #[command(alias = "ls")]
+    #[command(
+        visible_alias = "ls",
+        long_about = "Display all saved Orbits with creation timestamp, account email, optional label, and active status indicator."
+    )]
     List,
 
     /// Show current active Orbit and account email
-    #[command(alias = "w")]
+    #[command(
+        visible_alias = "w",
+        long_about = "Inspect active Antigravity authentication files and system keyring to verify active identity against saved Orbits."
+    )]
     Whoami,
 
     /// Remove a saved Orbit
-    #[command(alias = "rm")]
+    #[command(
+        visible_alias = "rm",
+        long_about = "Permanently remove a saved Orbit snapshot and purge its credentials from disk storage."
+    )]
     Remove {
         /// Orbit identifier name to remove
         name: String,
     },
 
-    /// Run a command in an isolated Orbit session with lifetime lease protection
-    #[command(alias = "r")]
+    /// Run a command in an isolated Orbit session
+    #[command(
+        visible_alias = "r",
+        long_about = "Temporarily activates the specified Orbit credentials in the environment and executes the given command (defaults to 'agy'). Protects against keyring stepping with an OS-level lifetime lease lock, and performs two-way token synchronization upon process exit."
+    )]
     Run {
         /// Orbit identifier name to activate
         name: String,
@@ -63,27 +83,47 @@ pub enum Commands {
         restore: bool,
 
         /// Command and arguments to execute (defaults to 'agy')
-        #[arg(last = true)]
+        #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
     },
 
-    /// Check and monitor model quota and usage from Google Cloud Code PA
-    #[command(alias = "q")]
+    /// Check model quota and consumption status
+    #[command(
+        visible_alias = "q",
+        long_about = "Check and monitor Google Cloud Code PA model quota and consumption status.\n\n\
+                      By default, queries the currently active Orbit account.\n\
+                      Pass [NAME] to inspect a specific saved Orbit without switching.\n\
+                      Pass `-a, --all` to display an aggregated multi-account dashboard across all saved Orbits.\n\
+                      Pass `-r, --refresh` to bypass local 60s cache and fetch fresh remote data."
+    )]
     Quota {
-        /// Optional Orbit identifier name (defaults to active orbit)
+        /// Target Orbit name (defaults to active orbit; mutually exclusive with --all)
+        #[arg(conflicts_with = "all")]
         name: Option<String>,
 
         /// Force refresh from remote API, bypassing the 60s local cache
         #[arg(short, long)]
         refresh: bool,
+
+        /// Query and display aggregated quota dashboard for all saved Orbits
+        #[arg(short, long, conflicts_with = "name")]
+        all: bool,
     },
 
-    /// Generate dynamic & static shell completion scripts
-    #[command(alias = "comp")]
-    Completions {
-        /// Target shell family
+    /// Generate shell completion scripts
+    #[command(
+        visible_alias = "comp",
+        long_about = "Generate dynamic & static shell completion scripts for Bash, Zsh, Fish, PowerShell, or Elvish.\n\
+                      Automatically detects your current shell environment when omitted in an interactive terminal."
+    )]
+    Completion {
+        /// Target shell family (auto-detected if omitted)
         #[arg(value_enum)]
-        shell: clap_complete::Shell,
+        shell: Option<clap_complete::Shell>,
+
+        /// Output raw script without setup guide even in interactive terminal
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Internal fast query for shell completions (outputs orbit names only)
