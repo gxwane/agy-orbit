@@ -27,8 +27,8 @@ fn test_wal_auto_recovery_from_applied_crash() {
         "tx-crash-999".into(),
         OrbitName::new("personal").unwrap(),
         Some(StoredSnapshot {
-            oauth_creds: r#"{"access_token": "work-valid-token"}"#.into(),
-            google_accounts: r#"{"active": "work@company.com", "old": []}"#.into(),
+            oauth_creds: Some(r#"{"access_token": "work-valid-token"}"#.into()),
+            google_accounts: Some(r#"{"active": "work@company.com", "old": []}"#.into()),
             keyring_secret: "work-valid-secret".into(),
         }),
     );
@@ -48,10 +48,10 @@ fn test_wal_auto_recovery_from_applied_crash() {
     );
 
     // 4. Verify target has been rolled back to the valid 'work' snapshot
-    let restored_accounts = target.read_google_accounts().unwrap();
+    let restored_accounts = target.read_google_accounts().unwrap().unwrap();
     assert!(String::from_utf8_lossy(&restored_accounts).contains("work@company.com"));
 
-    let restored_oauth = target.read_oauth_creds().unwrap();
+    let restored_oauth = target.read_oauth_creds().unwrap().unwrap();
     assert!(String::from_utf8_lossy(&restored_oauth).contains("work-valid-token"));
 
     assert_eq!(keyring.get_secret().unwrap(), "work-valid-secret");

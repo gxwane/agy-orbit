@@ -65,20 +65,12 @@ pub struct MockTarget {
 }
 
 impl TargetPort for MockTarget {
-    fn read_oauth_creds(&self) -> Result<Vec<u8>> {
-        self.oauth_creds
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| OrbitError::AuthFileMissing("oauth_creds.json".into()))
+    fn read_oauth_creds(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self.oauth_creds.lock().unwrap().clone())
     }
 
-    fn read_google_accounts(&self) -> Result<Vec<u8>> {
-        self.google_accounts
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| OrbitError::AuthFileMissing("google_accounts.json".into()))
+    fn read_google_accounts(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self.google_accounts.lock().unwrap().clone())
     }
 
     fn write_oauth_creds(&self, data: &[u8]) -> Result<()> {
@@ -91,8 +83,18 @@ impl TargetPort for MockTarget {
         Ok(())
     }
 
+    fn delete_oauth_creds(&self) -> Result<()> {
+        *self.oauth_creds.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn delete_google_accounts(&self) -> Result<()> {
+        *self.google_accounts.lock().unwrap() = None;
+        Ok(())
+    }
+
     fn active_exists(&self) -> bool {
-        self.oauth_creds.lock().unwrap().is_some() && self.google_accounts.lock().unwrap().is_some()
+        self.oauth_creds.lock().unwrap().is_some() || self.google_accounts.lock().unwrap().is_some()
     }
 }
 

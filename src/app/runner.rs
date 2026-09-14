@@ -1,6 +1,6 @@
 use crate::app::SwitchService;
 use crate::domain::credentials::{
-    compute_target_fingerprint, CredentialSnapshot, GoogleAccounts, OAuthCreds,
+    compute_target_fingerprint, resolve_credentials, CredentialSnapshot, OAuthCreds,
 };
 use crate::domain::lease::LeaseRecord;
 use crate::domain::orbit::{OrbitMetadata, OrbitName};
@@ -100,11 +100,14 @@ impl<'a> RunService<'a> {
         let lease_guard = self.lease.try_acquire_lease(&lease_record)?;
 
         // 6. Record initial fingerprint of target plane credentials before execution
-        let initial_oauth = self.target.read_oauth_creds().unwrap_or_default();
-        let initial_accounts = self.target.read_google_accounts().unwrap_or_default();
+        let initial_oauth = self.target.read_oauth_creds().unwrap_or(None);
+        let initial_accounts = self.target.read_google_accounts().unwrap_or(None);
         let initial_secret = self.keyring.get_secret().unwrap_or_default();
-        let initial_fp =
-            compute_target_fingerprint(&initial_oauth, &initial_accounts, &initial_secret);
+        let initial_fp = compute_target_fingerprint(
+            initial_oauth.as_deref(),
+            initial_accounts.as_deref(),
+            &initial_secret,
+        );
 
         // 7. Spawn and supervise child process with injected environment markers
         let program = &cmd_display[0];
@@ -208,28 +211,36 @@ impl<'a> RunService<'a> {
         };
 
         // Check 1: Structure & Semantic Validation (Anti-Torn Write)
-        let creds: OAuthCreds = match serde_json::from_slice(&oauth_bytes) {
-            Ok(c) => c,
-            Err(e) => {
+        if let Some(ref oauth) = oauth_bytes {
+            let creds: OAuthCreds = match serde_json::from_slice(oauth) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "{} [Two-Way Sync] Warning: oauth_creds.json corrupted/truncated: {e}. Preserving vault snapshot.",
+                        "⚠".yellow()
+                    );
+                    return Ok(false);
+                }
+            };
+
+            if let Err(e) = creds.validate_for_sync() {
                 eprintln!(
-                    "{} [Two-Way Sync] Warning: oauth_creds.json corrupted/truncated: {e}. Preserving vault snapshot.",
+                    "{} [Two-Way Sync] Warning: {e}. Preserving vault snapshot.",
                     "⚠".yellow()
                 );
                 return Ok(false);
             }
-        };
-
-        if let Err(e) = creds.validate_for_sync() {
-            eprintln!(
-                "{} [Two-Way Sync] Warning: {e}. Preserving vault snapshot.",
-                "⚠".yellow()
-            );
-            return Ok(false);
         }
 
         // Check 2: Identity Assertion (Active email must match orbit)
-        if let Ok(accounts) = serde_json::from_slice::<GoogleAccounts>(&accounts_bytes) {
-            if let Some(ref active_email) = accounts.active {
+        let resolved = resolve_credentials(
+            Some(&keyring_secret),
+            oauth_bytes.as_deref(),
+            accounts_bytes.as_deref(),
+        );
+
+        if let Some(ref identity) = resolved {
+            if let Some(ref active_email) = identity.email {
                 let index = self.storage.load_index()?;
                 if let Some(orbit_rec) = index.orbits.get(orbit_name.as_str()) {
                     if &orbit_rec.email != active_email {
@@ -247,7 +258,11 @@ impl<'a> RunService<'a> {
         }
 
         // Check 3: Fingerprint check (Skip if tokens did not change)
-        let current_fp = compute_target_fingerprint(&oauth_bytes, &accounts_bytes, &keyring_secret);
+        let current_fp = compute_target_fingerprint(
+            oauth_bytes.as_deref(),
+            accounts_bytes.as_deref(),
+            &keyring_secret,
+        );
         if current_fp == initial_fp {
             return Ok(false);
         }
@@ -322,7 +337,7 @@ mod tests {
         keyring.set_secret("secret_token").unwrap();
 
         let initial_fp =
-            compute_target_fingerprint(initial_oauth, initial_accounts, "secret_token");
+            compute_target_fingerprint(Some(initial_oauth), Some(initial_accounts), "secret_token");
 
         let service = RunService::new(&target, &keyring, &vault, &storage, &lease);
 
@@ -344,7 +359,7 @@ mod tests {
 
         // Verify vault has the new snapshot
         let (saved_snapshot, _) = storage.load_orbit_snapshot(&orbit_name).unwrap();
-        assert_eq!(saved_snapshot.oauth_creds, updated_oauth.to_vec());
+        assert_eq!(saved_snapshot.oauth_creds, Some(updated_oauth.to_vec()));
     }
 
     #[test]
@@ -364,7 +379,8 @@ mod tests {
         target.write_google_accounts(initial_accounts).unwrap();
         keyring.set_secret("secret").unwrap();
 
-        let initial_fp = compute_target_fingerprint(initial_oauth, initial_accounts, "secret");
+        let initial_fp =
+            compute_target_fingerprint(Some(initial_oauth), Some(initial_accounts), "secret");
 
         let service = RunService::new(&target, &keyring, &vault, &storage, &lease);
 

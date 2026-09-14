@@ -59,20 +59,25 @@ impl<'a> SwitchService<'a> {
             .map_err(|e| OrbitError::Vault(format!("Keyring secret is not valid UTF-8: {e}")))?;
 
         // 2. Capture current active state as old_state for transaction rollback
-        let old_state = if self.target.active_exists() {
-            let oauth = self.target.read_oauth_creds().ok();
-            let accounts = self.target.read_google_accounts().ok();
+        let old_state = {
+            let oauth = self
+                .target
+                .read_oauth_creds()?
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
+            let accounts = self
+                .target
+                .read_google_accounts()?
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
             let secret = self.keyring.get_secret().ok();
-            match (oauth, accounts, secret) {
-                (Some(o), Some(a), Some(s)) => Some(StoredSnapshot {
-                    oauth_creds: String::from_utf8_lossy(&o).into_owned(),
-                    google_accounts: String::from_utf8_lossy(&a).into_owned(),
-                    keyring_secret: s,
-                }),
-                _ => None,
+            if oauth.is_some() || accounts.is_some() || secret.is_some() {
+                Some(StoredSnapshot {
+                    oauth_creds: oauth,
+                    google_accounts: accounts,
+                    keyring_secret: secret.unwrap_or_default(),
+                })
+            } else {
+                None
             }
-        } else {
-            None
         };
 
         // 3. Phase 1: PREPARE (Write WAL Journal)
@@ -85,10 +90,18 @@ impl<'a> SwitchService<'a> {
             journal.phase = TransactionPhase::Applied;
             self.storage.write_journal(&journal)?;
 
-            self.target
-                .write_oauth_creds(&target_snapshot.oauth_creds)?;
-            self.target
-                .write_google_accounts(&target_snapshot.google_accounts)?;
+            if let Some(ref oauth) = target_snapshot.oauth_creds {
+                self.target.write_oauth_creds(oauth)?;
+            } else {
+                self.target.delete_oauth_creds()?;
+            }
+
+            if let Some(ref accounts) = target_snapshot.google_accounts {
+                self.target.write_google_accounts(accounts)?;
+            } else {
+                self.target.delete_google_accounts()?;
+            }
+
             self.keyring.set_secret(&target_secret)?;
 
             // 5. Phase 3: VERIFY (Check integrity)
@@ -102,16 +115,38 @@ impl<'a> SwitchService<'a> {
                 ));
             }
 
+            let written_accounts = self.target.read_google_accounts()?;
+            if written_accounts != target_snapshot.google_accounts {
+                return Err(OrbitError::RollbackFailed(
+                    "Verification mismatch in google_accounts.json".into(),
+                ));
+            }
+
+            let active_secret = self.keyring.get_secret()?;
+            if active_secret != target_secret {
+                return Err(OrbitError::RollbackFailed(
+                    "Verification mismatch in OS keyring".into(),
+                ));
+            }
+
             Ok(())
         })();
 
         // Handle error and execute atomic rollback if apply failed
         if let Err(e) = apply_result {
             if let Some(ref prev) = old_state {
-                let _ = self.target.write_oauth_creds(prev.oauth_creds.as_bytes());
-                let _ = self
-                    .target
-                    .write_google_accounts(prev.google_accounts.as_bytes());
+                if let Some(ref oauth) = prev.oauth_creds {
+                    let _ = self.target.write_oauth_creds(oauth.as_bytes());
+                } else {
+                    let _ = self.target.delete_oauth_creds();
+                }
+
+                if let Some(ref accounts) = prev.google_accounts {
+                    let _ = self.target.write_google_accounts(accounts.as_bytes());
+                } else {
+                    let _ = self.target.delete_google_accounts();
+                }
+
                 let _ = self.keyring.set_secret(&prev.keyring_secret);
             }
             let _ = self.storage.clear_journal();
@@ -151,8 +186,8 @@ mod tests {
 
         let orbit_name = OrbitName::new("work").unwrap();
         let snapshot = CredentialSnapshot::new(
-            br#"{"token": "work_token"}"#.to_vec(),
-            br#"{"active": "work@company.com", "old": []}"#.to_vec(),
+            Some(br#"{"token": "work_token"}"#.to_vec()),
+            Some(br#"{"active": "work@company.com", "old": []}"#.to_vec()),
             "work_secret".into(),
         );
         let meta = OrbitMetadata {
@@ -186,7 +221,7 @@ mod tests {
         // Verify target received target credentials
         assert_eq!(
             target.read_oauth_creds().unwrap(),
-            b"{\"token\": \"work_token\"}"
+            Some(b"{\"token\": \"work_token\"}".to_vec())
         );
         assert_eq!(keyring.get_secret().unwrap(), "work_secret");
 

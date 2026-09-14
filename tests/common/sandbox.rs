@@ -4,17 +4,21 @@ use tempfile::TempDir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Hermetic Test Sandbox isolating GEMINI_HOME, AGYO_HOME, and AGYO_RUNTIME_DIR.
+/// Hermetic Test Sandbox isolating GEMINI_HOME, AGYO_HOME, AGYO_RUNTIME_DIR, and OS Keyring.
 #[allow(dead_code)]
 pub struct TestSandbox {
     pub dir: TempDir,
     pub gemini_dir: PathBuf,
     pub agyo_dir: PathBuf,
     pub runtime_dir: PathBuf,
+    pub keyring_target: String,
+    pub keyring_service: String,
     _guard: MutexGuard<'static, ()>,
     orig_gemini_home: Option<String>,
     orig_agyo_home: Option<String>,
     orig_runtime_dir: Option<String>,
+    orig_keyring_target: Option<String>,
+    orig_keyring_service: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -33,20 +37,32 @@ impl TestSandbox {
         let orig_gemini_home = std::env::var("GEMINI_HOME").ok();
         let orig_agyo_home = std::env::var("AGYO_HOME").ok();
         let orig_runtime_dir = std::env::var("AGYO_RUNTIME_DIR").ok();
+        let orig_keyring_target = std::env::var("AGYO_KEYRING_TARGET").ok();
+        let orig_keyring_service = std::env::var("AGYO_KEYRING_SERVICE").ok();
+
+        let unique_suffix = dir.path().file_name().unwrap().to_str().unwrap();
+        let keyring_target = format!("LegacyGeneric:target=test_sandbox_{unique_suffix}");
+        let keyring_service = format!("test_sandbox_{unique_suffix}");
 
         std::env::set_var("GEMINI_HOME", &gemini_dir);
         std::env::set_var("AGYO_HOME", &agyo_dir);
         std::env::set_var("AGYO_RUNTIME_DIR", &runtime_dir);
+        std::env::set_var("AGYO_KEYRING_TARGET", &keyring_target);
+        std::env::set_var("AGYO_KEYRING_SERVICE", &keyring_service);
 
         Self {
             dir,
             gemini_dir,
             agyo_dir,
             runtime_dir,
+            keyring_target,
+            keyring_service,
             _guard: guard,
             orig_gemini_home,
             orig_agyo_home,
             orig_runtime_dir,
+            orig_keyring_target,
+            orig_keyring_service,
         }
     }
 
@@ -77,6 +93,14 @@ impl Drop for TestSandbox {
         match &self.orig_runtime_dir {
             Some(v) => std::env::set_var("AGYO_RUNTIME_DIR", v),
             None => std::env::remove_var("AGYO_RUNTIME_DIR"),
+        }
+        match &self.orig_keyring_target {
+            Some(v) => std::env::set_var("AGYO_KEYRING_TARGET", v),
+            None => std::env::remove_var("AGYO_KEYRING_TARGET"),
+        }
+        match &self.orig_keyring_service {
+            Some(v) => std::env::set_var("AGYO_KEYRING_SERVICE", v),
+            None => std::env::remove_var("AGYO_KEYRING_SERVICE"),
         }
     }
 }

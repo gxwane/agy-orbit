@@ -31,9 +31,18 @@ impl<'a> RecoveryService<'a> {
             );
 
             if let Some(ref old) = journal.old_state {
-                self.target.write_oauth_creds(old.oauth_creds.as_bytes())?;
-                self.target
-                    .write_google_accounts(old.google_accounts.as_bytes())?;
+                if let Some(ref oauth) = old.oauth_creds {
+                    self.target.write_oauth_creds(oauth.as_bytes())?;
+                } else {
+                    self.target.delete_oauth_creds()?;
+                }
+
+                if let Some(ref accounts) = old.google_accounts {
+                    self.target.write_google_accounts(accounts.as_bytes())?;
+                } else {
+                    self.target.delete_google_accounts()?;
+                }
+
                 self.keyring.set_secret(&old.keyring_secret)?;
             }
 
@@ -59,8 +68,8 @@ mod tests {
         let storage = MockStorage::default();
 
         let old_state = StoredSnapshot {
-            oauth_creds: "{\"old\": true}".into(),
-            google_accounts: "{\"active\": \"original@example.com\"}".into(),
+            oauth_creds: Some("{\"old\": true}".into()),
+            google_accounts: Some("{\"active\": \"original@example.com\"}".into()),
             keyring_secret: "original_secret".into(),
         };
 
@@ -76,7 +85,10 @@ mod tests {
         assert_eq!(healed, Some("interrupted_tx_123".into()));
 
         // Target must be restored to old_state
-        assert_eq!(target.read_oauth_creds().unwrap(), b"{\"old\": true}");
+        assert_eq!(
+            target.read_oauth_creds().unwrap(),
+            Some(b"{\"old\": true}".to_vec())
+        );
         assert_eq!(keyring.get_secret().unwrap(), "original_secret");
 
         // Journal must be cleared

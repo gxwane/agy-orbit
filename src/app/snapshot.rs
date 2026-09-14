@@ -37,9 +37,14 @@ impl<'a> SnapshotService<'a> {
     ) -> Result<OrbitMetadata> {
         let orbit_name = OrbitName::new(name_str)?;
 
-        if !self.target.active_exists() {
+        let has_keyring = self
+            .keyring
+            .get_secret()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !self.target.active_exists() && !has_keyring {
             return Err(OrbitError::AuthFileMissing(
-                "Active Antigravity credentials missing in ~/.gemini/".into(),
+                "Active Antigravity credentials missing in OS Keyring and ~/.gemini/".into(),
             ));
         }
 
@@ -51,7 +56,9 @@ impl<'a> SnapshotService<'a> {
         // Capture active credentials
         let snapshot = self.target.capture_active(self.keyring)?;
         let email = snapshot.extract_active_email().ok_or_else(|| {
-            OrbitError::AuthFileMissing("No active Google email found in accounts".into())
+            OrbitError::AuthFileMissing(
+                "No active Google email found in keyring or accounts".into(),
+            )
         })?;
 
         // Hardware-seal the keyring secret

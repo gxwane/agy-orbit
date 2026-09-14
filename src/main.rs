@@ -108,7 +108,7 @@ fn run_app() -> Result<()> {
             Ok(())
         }
         Some(Commands::Whoami) => {
-            let service = QueryService::new(&target, &storage);
+            let service = QueryService::new(&target, &storage).with_keyring(&keyring);
             let status = service.whoami()?;
             render_whoami(&status);
             Ok(())
@@ -131,7 +131,9 @@ fn run_app() -> Result<()> {
         Some(Commands::Quota { name, refresh }) => {
             let quota_port = CloudCodeQuotaAdapter::new();
             let cache_port = FileQuotaCacheAdapter;
-            let service = QuotaService::new(&target, &storage, &quota_port, &cache_port);
+            let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
+                .with_keyring(&keyring)
+                .with_vault(vault.as_ref());
             let view_data = service.query_quota(QuotaQueryOptions {
                 orbit: name,
                 refresh,
@@ -154,7 +156,7 @@ fn run_app() -> Result<()> {
         }
         None => {
             if is_interactive() {
-                let query_svc = QueryService::new(&target, &storage);
+                let query_svc = QueryService::new(&target, &storage).with_keyring(&keyring);
                 let index = query_svc.list()?;
                 let active = index.active_orbit.as_deref();
 
@@ -225,7 +227,7 @@ fn run_app() -> Result<()> {
                 }
             } else {
                 // Non-TTY: graceful silent degradation, output status without blocking
-                let query_svc = QueryService::new(&target, &storage);
+                let query_svc = QueryService::new(&target, &storage).with_keyring(&keyring);
                 if let Ok(status) = query_svc.whoami() {
                     render_whoami(&status);
                 }

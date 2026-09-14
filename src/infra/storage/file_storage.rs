@@ -38,14 +38,12 @@ impl StoragePort for FileStorage {
         let orbit_dir = get_orbit_dir(name.as_str())?;
         fs::create_dir_all(&orbit_dir)?;
 
-        atomic_write(
-            get_orbit_oauth_creds_path(name.as_str())?,
-            &snapshot.oauth_creds,
-        )?;
-        atomic_write(
-            get_orbit_google_accounts_path(name.as_str())?,
-            &snapshot.google_accounts,
-        )?;
+        if let Some(ref oauth) = snapshot.oauth_creds {
+            atomic_write(get_orbit_oauth_creds_path(name.as_str())?, oauth)?;
+        }
+        if let Some(ref accounts) = snapshot.google_accounts {
+            atomic_write(get_orbit_google_accounts_path(name.as_str())?, accounts)?;
+        }
         atomic_write(get_orbit_keyring_secret_path(name.as_str())?, sealed_secret)?;
 
         let meta_json = serde_json::to_string_pretty(meta)?;
@@ -59,8 +57,16 @@ impl StoragePort for FileStorage {
         let accounts_path = get_orbit_google_accounts_path(orbit_name)?;
         let secret_path = get_orbit_keyring_secret_path(orbit_name)?;
 
-        let oauth = fs::read(oauth_path)?;
-        let accounts = fs::read(accounts_path)?;
+        let oauth = if oauth_path.exists() {
+            Some(fs::read(oauth_path)?)
+        } else {
+            None
+        };
+        let accounts = if accounts_path.exists() {
+            Some(fs::read(accounts_path)?)
+        } else {
+            None
+        };
         let sealed_secret = fs::read(secret_path)?;
 
         // CredentialSnapshot keyring_secret will be filled after unsealing

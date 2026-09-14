@@ -12,8 +12,10 @@ pub enum TransactionPhase {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredSnapshot {
-    pub oauth_creds: String,
-    pub google_accounts: String,
+    #[serde(default)]
+    pub oauth_creds: Option<String>,
+    #[serde(default)]
+    pub google_accounts: Option<String>,
     pub keyring_secret: String,
 }
 

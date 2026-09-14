@@ -210,7 +210,8 @@ fn test_quota_service_named_orbit_snapshot() {
         mode: MockMode::Success(sample_quota_summary()),
     };
 
-    let service = QuotaService::new(&target, &storage, &mock_quota, &cache_port);
+    let service =
+        QuotaService::new(&target, &storage, &mock_quota, &cache_port).with_vault(vault.as_ref());
 
     // Query specifically for "work"
     let data = service

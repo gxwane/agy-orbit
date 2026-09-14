@@ -72,6 +72,6 @@ fn test_runner_executes_and_syncs_refreshed_token() {
     // 4. Verify that with restore: true, the active orbit was switched back to personal
     let final_index = storage.load_index().unwrap();
     assert_eq!(final_index.active_orbit, Some("personal".into()));
-    let active_accounts = target.read_google_accounts().unwrap();
+    let active_accounts = target.read_google_accounts().unwrap().unwrap();
     assert!(String::from_utf8_lossy(&active_accounts).contains("personal@example.com"));
 }

@@ -7,6 +7,14 @@ fn get_agyo_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_agyo"))
 }
 
+fn apply_sandbox_envs(cmd: &mut Command, sandbox: &TestSandbox) {
+    cmd.env("GEMINI_HOME", &sandbox.gemini_dir)
+        .env("AGYO_HOME", &sandbox.agyo_dir)
+        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
+        .env("AGYO_KEYRING_TARGET", &sandbox.keyring_target)
+        .env("AGYO_KEYRING_SERVICE", &sandbox.keyring_service);
+}
+
 #[test]
 fn test_cli_help_and_version() {
     let bin = get_agyo_bin();
@@ -38,13 +46,10 @@ fn test_cli_whoami_empty_sandbox() {
     let sandbox = TestSandbox::new();
     let bin = get_agyo_bin();
 
-    let output = Command::new(&bin)
-        .arg("whoami")
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
-        .output()
-        .expect("Failed to execute agyo whoami");
+    let mut cmd = Command::new(&bin);
+    cmd.arg("whoami");
+    apply_sandbox_envs(&mut cmd, &sandbox);
+    let output = cmd.output().expect("Failed to execute agyo whoami");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -57,13 +62,10 @@ fn test_cli_whoami_with_live_credentials() {
     sandbox.write_active_credentials("dummy-token", "dev@example.com");
 
     let bin = get_agyo_bin();
-    let output = Command::new(&bin)
-        .arg("whoami")
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
-        .output()
-        .expect("Failed to execute agyo whoami");
+    let mut cmd = Command::new(&bin);
+    cmd.arg("whoami");
+    apply_sandbox_envs(&mut cmd, &sandbox);
+    let output = cmd.output().expect("Failed to execute agyo whoami");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -76,13 +78,10 @@ fn test_cli_list_empty() {
     let sandbox = TestSandbox::new();
     let bin = get_agyo_bin();
 
-    let output = Command::new(&bin)
-        .arg("list")
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
-        .output()
-        .expect("Failed to execute agyo list");
+    let mut cmd = Command::new(&bin);
+    cmd.arg("list");
+    apply_sandbox_envs(&mut cmd, &sandbox);
+    let output = cmd.output().expect("Failed to execute agyo list");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -94,13 +93,10 @@ fn test_cli_invalid_orbit_name_rejected() {
     let sandbox = TestSandbox::new();
     let bin = get_agyo_bin();
 
-    let output = Command::new(&bin)
-        .args(["use", "../suspicious"])
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
-        .output()
-        .expect("Failed to execute agyo use");
+    let mut cmd = Command::new(&bin);
+    cmd.args(["use", "../suspicious"]);
+    apply_sandbox_envs(&mut cmd, &sandbox);
+    let output = cmd.output().expect("Failed to execute agyo use");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
