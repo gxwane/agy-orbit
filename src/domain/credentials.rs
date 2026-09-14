@@ -68,6 +68,13 @@ pub struct CredentialSnapshot {
     pub keyring_secret: String,
 }
 
+/// Extract active email from raw google_accounts.json bytes
+pub fn extract_active_email(google_accounts: &[u8]) -> Option<String> {
+    serde_json::from_slice::<GoogleAccounts>(google_accounts)
+        .ok()
+        .and_then(|a| a.active)
+}
+
 impl CredentialSnapshot {
     pub fn new(oauth_creds: Vec<u8>, google_accounts: Vec<u8>, keyring_secret: String) -> Self {
         Self {
@@ -78,9 +85,7 @@ impl CredentialSnapshot {
     }
 
     pub fn extract_active_email(&self) -> Option<String> {
-        serde_json::from_slice::<GoogleAccounts>(&self.google_accounts)
-            .ok()
-            .and_then(|a| a.active)
+        extract_active_email(&self.google_accounts)
     }
 }
 

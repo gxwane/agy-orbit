@@ -67,10 +67,26 @@ pub enum Commands {
         cmd: Vec<String>,
     },
 
-    /// Check quota and usage for active or specified Orbit
+    /// Check and monitor model quota and usage from Google Cloud Code PA
     #[command(alias = "q")]
     Quota {
         /// Optional Orbit identifier name (defaults to active orbit)
         name: Option<String>,
+
+        /// Force refresh from remote API, bypassing the 60s local cache
+        #[arg(short, long)]
+        refresh: bool,
     },
+
+    /// Generate dynamic & static shell completion scripts
+    #[command(alias = "comp")]
+    Completions {
+        /// Target shell family
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Internal fast query for shell completions (outputs orbit names only)
+    #[command(hide = true, name = "__complete-orbits")]
+    CompleteOrbits,
 }

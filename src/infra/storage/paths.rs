@@ -114,6 +114,16 @@ pub fn get_legacy_profiles_dir() -> Result<PathBuf> {
     Ok(get_gemini_dir()?.join("profiles"))
 }
 
+/// Resolve the directory for persistent non-sensitive caches (~/.agyo/cache/).
+pub fn get_cache_dir() -> Result<PathBuf> {
+    Ok(get_agyo_dir()?.join("cache"))
+}
+
+/// Resolve the path to the cached quota file (~/.agyo/cache/quota_<name>.json).
+pub fn get_quota_cache_path(name: &str) -> Result<PathBuf> {
+    Ok(get_cache_dir()?.join(format!("quota_{name}.json")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

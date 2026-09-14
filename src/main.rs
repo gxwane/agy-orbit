@@ -1,19 +1,21 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use colored::Colorize;
 
 use agy_orbit::app::{
-    MigrationService, QueryService, RecoveryService, RunOptions, RunService, SnapshotService,
-    SwitchService,
+    MigrationService, QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions,
+    RunService, SnapshotService, SwitchService,
 };
 use agy_orbit::cli::{Cli, Commands};
 use agy_orbit::error::Result;
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
+use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
+use agy_orbit::ports::StoragePort;
 use agy_orbit::ui::{
-    install_terminal_panic_hook, is_interactive, render_orbits_table, render_success,
-    render_whoami, select_orbit_interactive,
+    install_terminal_panic_hook, is_interactive, render_orbits_table, render_quota_view,
+    render_success, render_whoami, select_orbit_interactive,
 };
 
 fn main() {
@@ -28,6 +30,16 @@ fn main() {
 
 fn run_app() -> Result<()> {
     let cli = Cli::parse();
+
+    // Fast-path: internal shell completion queries (instant read-only, no locks, zero stderr)
+    if matches!(&cli.command, Some(Commands::CompleteOrbits)) {
+        let storage = FileStorage;
+        let index = storage.load_index().unwrap_or_default();
+        for name in index.orbits.keys() {
+            println!("{name}");
+        }
+        return Ok(());
+    }
 
     // Guard against recursive session reentrancy for mutating commands
     if std::env::var("AGYO_SESSION_ACTIVE").as_deref() == Ok("1") {
@@ -116,11 +128,28 @@ fn run_app() -> Result<()> {
             })?;
             std::process::exit(exit_code);
         }
-        Some(Commands::Quota { .. }) => {
-            eprintln!(
-                "{} `agyo quota` (quota checker) will be available in Phase 3.",
-                "ℹ".cyan().bold()
-            );
+        Some(Commands::Quota { name, refresh }) => {
+            let quota_port = CloudCodeQuotaAdapter::new();
+            let cache_port = FileQuotaCacheAdapter;
+            let service = QuotaService::new(&target, &storage, &quota_port, &cache_port);
+            let view_data = service.query_quota(QuotaQueryOptions {
+                orbit: name,
+                refresh,
+            })?;
+            render_quota_view(&view_data);
+            Ok(())
+        }
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "agyo", &mut std::io::stdout());
+            Ok(())
+        }
+        Some(Commands::CompleteOrbits) => {
+            // Already handled at fast-path, but present here for match exhaustiveness
+            let index = storage.load_index().unwrap_or_default();
+            for name in index.orbits.keys() {
+                println!("{name}");
+            }
             Ok(())
         }
         None => {

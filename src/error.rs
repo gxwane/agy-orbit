@@ -42,6 +42,12 @@ pub enum OrbitError {
     #[error("Rollback failed: {0}")]
     RollbackFailed(String),
 
+    #[error("Quota API error: {0}")]
+    QuotaHttp(String),
+
+    #[error("Google Quota API rate limit exceeded (HTTP 429)")]
+    QuotaRateLimited { retry_after_secs: Option<u64> },
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
