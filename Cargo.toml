@@ -45,7 +45,7 @@ crossterm = "0.28"
 ureq = { version = "2.10", default-features = false, features = ["json", "tls"] }
 clap_complete = "4.5"
 aes-gcm = "0.10"
-getrandom = "0.2"
+getrandom = "0.4"
 
 [build-dependencies]
 winres = "0.1.12"
