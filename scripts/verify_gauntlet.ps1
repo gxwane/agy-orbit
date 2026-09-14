@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:RUSTFLAGS = "-D warnings"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  agy-orbit Quality Verification Suite  " -ForegroundColor Cyan
@@ -18,17 +19,22 @@ if ($LASTEXITCODE -ne 0) {
 
 # 2. 代码格式化校验 (Cargo fmt)
 Write-Host "`n[Gate 2/3] Checking Code Formatting (cargo fmt)..." -ForegroundColor Yellow
-cargo fmt --check
+cargo fmt --all --check
 if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ Formatting check failed! Run 'cargo fmt' to fix." -ForegroundColor Red
     exit 1
 }
 
-# 3. 完整测试套件 (Cargo test)
-Write-Host "`n[Gate 3/3] Running Cargo Test Suite..." -ForegroundColor Yellow
-cargo test
+# 3. 完整测试套件 (Cargo test --all-targets & --doc)
+Write-Host "`n[Gate 3/3] Running Cargo Test Suite (all targets & doc tests)..." -ForegroundColor Yellow
+cargo test --all-targets
 if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ Unit/Integration tests failed!" -ForegroundColor Red
+    exit 1
+}
+cargo test --doc
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ Doc-tests failed!" -ForegroundColor Red
     exit 1
 }
 
