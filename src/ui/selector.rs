@@ -1,4 +1,4 @@
-use inquire::{error::InquireError, Select};
+use inquire::{Select, error::InquireError};
 use std::io::IsTerminal;
 
 /// Installs a global panic hook to ensure terminal raw mode is restored and cursor is

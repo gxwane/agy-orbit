@@ -1,4 +1,4 @@
-use crate::domain::credentials::{resolve_credentials, ResolvedIdentity};
+use crate::domain::credentials::{ResolvedIdentity, resolve_credentials};
 use crate::domain::orbit::OrbitName;
 use crate::domain::quota::{QuotaBucket, QuotaCacheEntry, QuotaSummary};
 use crate::error::{OrbitError, Result};
@@ -186,18 +186,17 @@ impl<'a> QuotaService<'a> {
 
         // 1. Check cached quota (TTL: 60 seconds)
         let cached_entry = self.cache_port.load_quota_cache(&orbit_name).ok().flatten();
-        if !opts.refresh {
-            if let Some(ref cache) = cached_entry {
-                if cache.is_fresh(60) {
-                    return Ok(QuotaViewData {
-                        orbit_name,
-                        account_email,
-                        summary: cache.summary.clone(),
-                        is_stale: false,
-                        warning: None,
-                    });
-                }
-            }
+        if !opts.refresh
+            && let Some(ref cache) = cached_entry
+            && cache.is_fresh(60)
+        {
+            return Ok(QuotaViewData {
+                orbit_name,
+                account_email,
+                summary: cache.summary.clone(),
+                is_stale: false,
+                warning: None,
+            });
         }
 
         // 2. If access token is empty or whitespace, fail fast
@@ -235,7 +234,8 @@ impl<'a> QuotaService<'a> {
                         Some(secs) => format!(
                             "Google Quota API rate limited (HTTP 429). Retry after {secs}s. Showing cached data."
                         ),
-                        None => "Google Quota API rate limited (HTTP 429). Showing cached data.".to_string(),
+                        None => "Google Quota API rate limited (HTTP 429). Showing cached data."
+                            .to_string(),
                     };
                     Ok(QuotaViewData {
                         orbit_name,
@@ -309,31 +309,27 @@ impl<'a> QuotaService<'a> {
                         let thread_email = email.clone();
                         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             // 1. Check cache first if not force refresh
-                            if !refresh {
-                                if let Ok(Some(cached)) =
+                            if !refresh
+                                && let Ok(Some(cached)) =
                                     self.cache_port.load_quota_cache(&thread_name)
-                                {
-                                    if cached.is_fresh(60) {
-                                        let metrics = extract_summary_metrics(&cached.summary);
-                                        return MultiQuotaRowData {
-                                            orbit_name: thread_name.clone(),
-                                            account_email: thread_email
-                                                .clone()
-                                                .or(cached.account_email),
-                                            is_active,
-                                            gemini_5h_pct: metrics.gemini_5h_pct,
-                                            gemini_wk_pct: metrics.gemini_wk_pct,
-                                            claude_5h_pct: metrics.claude_5h_pct,
-                                            claude_wk_pct: metrics.claude_wk_pct,
-                                            status: if is_active {
-                                                RowStatus::Active
-                                            } else {
-                                                RowStatus::Cached
-                                            },
-                                            next_reset: metrics.next_reset,
-                                        };
-                                    }
-                                }
+                                && cached.is_fresh(60)
+                            {
+                                let metrics = extract_summary_metrics(&cached.summary);
+                                return MultiQuotaRowData {
+                                    orbit_name: thread_name.clone(),
+                                    account_email: thread_email.clone().or(cached.account_email),
+                                    is_active,
+                                    gemini_5h_pct: metrics.gemini_5h_pct,
+                                    gemini_wk_pct: metrics.gemini_wk_pct,
+                                    claude_5h_pct: metrics.claude_5h_pct,
+                                    claude_wk_pct: metrics.claude_wk_pct,
+                                    status: if is_active {
+                                        RowStatus::Active
+                                    } else {
+                                        RowStatus::Cached
+                                    },
+                                    next_reset: metrics.next_reset,
+                                };
                             }
 
                             // 2. Fetch with row-level fault isolation

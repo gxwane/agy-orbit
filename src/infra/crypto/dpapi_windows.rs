@@ -12,7 +12,7 @@ struct DataBlob {
 
 #[link(name = "crypt32")]
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn CryptProtectData(
         pDataIn: *const DataBlob,
         szDataDescr: *const u16,

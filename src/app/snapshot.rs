@@ -115,13 +115,13 @@ impl<'a> SnapshotService<'a> {
         let orbit_name = OrbitName::new(name_str)?;
 
         // Prevent removing an Orbit that is currently actively leased by a process
-        if let Some(active_lease) = self.lease.check_active_lease()? {
-            if active_lease.orbit_name == orbit_name {
-                return Err(OrbitError::LeaseActive {
-                    pid: active_lease.pid,
-                    orbit: active_lease.orbit_name.to_string(),
-                });
-            }
+        if let Some(active_lease) = self.lease.check_active_lease()?
+            && active_lease.orbit_name == orbit_name
+        {
+            return Err(OrbitError::LeaseActive {
+                pid: active_lease.pid,
+                orbit: active_lease.orbit_name.to_string(),
+            });
         }
 
         let mut index = self.storage.load_index()?;

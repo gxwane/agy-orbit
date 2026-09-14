@@ -185,7 +185,9 @@ fn run_app() -> Result<()> {
                     if let Ok(status) = query_svc.whoami() {
                         render_whoami(&status);
                     }
-                    println!("\nRun `agyo save <orbit-name>` to save your current active account as an Orbit.");
+                    println!(
+                        "\nRun `agyo save <orbit-name>` to save your current active account as an Orbit."
+                    );
                     println!("Use `agyo --help` to view all available commands.");
                     Ok(())
                 } else if index.orbits.len() == 1
@@ -196,7 +198,9 @@ fn run_app() -> Result<()> {
                         "Orbit '{}' is currently active.",
                         single_name.bold()
                     ));
-                    println!("(Only 1 Orbit configured. Sign in to another account with 'agy', then run 'agyo save <name>' to add it.)");
+                    println!(
+                        "(Only 1 Orbit configured. Sign in to another account with 'agy', then run 'agyo save <name>' to add it.)"
+                    );
                     Ok(())
                 } else {
                     let mut orbit_pairs: Vec<(&str, &str)> = index

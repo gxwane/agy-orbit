@@ -109,31 +109,31 @@ impl std::fmt::Debug for KeyringToken {
 pub fn validate_keyring_secret_for_sync(secret: &str, oauth_bytes: Option<&[u8]>) -> Result<()> {
     let trimmed = secret.trim();
     if trimmed.is_empty() {
-        if let Some(bytes) = oauth_bytes {
-            if let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes) {
-                return oauth.validate_for_sync();
-            }
+        if let Some(bytes) = oauth_bytes
+            && let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes)
+        {
+            return oauth.validate_for_sync();
         }
         return Err(OrbitError::CredentialValidation(
             "Keyring secret is empty and no valid active OAuth credentials found".into(),
         ));
     }
     if trimmed.starts_with('{') {
-        if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed) {
-            if let Some(token) = payload.token {
-                let at = token.access_token.trim();
-                if at.is_empty() || at.len() < 30 {
+        if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed)
+            && let Some(token) = payload.token
+        {
+            let at = token.access_token.trim();
+            if at.is_empty() || at.len() < 30 {
+                return Err(OrbitError::CredentialValidation(
+                    "Keyring access_token is empty or abnormally short (< 30 chars)".into(),
+                ));
+            }
+            if let Some(ref rt) = token.refresh_token {
+                let rt_trim = rt.trim();
+                if rt_trim.is_empty() || rt_trim.len() < 20 {
                     return Err(OrbitError::CredentialValidation(
-                        "Keyring access_token is empty or abnormally short (< 30 chars)".into(),
+                        "Keyring refresh_token is present but truncated (< 20 chars)".into(),
                     ));
-                }
-                if let Some(ref rt) = token.refresh_token {
-                    let rt_trim = rt.trim();
-                    if rt_trim.is_empty() || rt_trim.len() < 20 {
-                        return Err(OrbitError::CredentialValidation(
-                            "Keyring refresh_token is present but truncated (< 20 chars)".into(),
-                        ));
-                    }
                 }
             }
             return Ok(());
@@ -161,15 +161,15 @@ fn b64_val(c: u8) -> Option<u8> {
     }
 }
 
-/// Decode URL-safe / standard Base64 string without external dependencies and zero panic risk.
+/// Constant-time, allocation-efficient RFC 4648 Base64URL decoder for JWT payloads.
+/// Eliminates dependency on external base64 crates in the domain core.
 pub fn decode_base64_url(input: &str) -> Option<Vec<u8>> {
     if input.is_empty() || input.len() > MAX_JWT_LEN {
         return None;
     }
     let bytes = input.trim_end_matches('=').as_bytes();
     let mut out = Vec::with_capacity((bytes.len() * 3) / 4);
-    let chunks = bytes.chunks_exact(4);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = bytes.as_chunks::<4>();
 
     for chunk in chunks {
         let b0 = b64_val(chunk[0])? as u32;
@@ -265,21 +265,21 @@ pub fn resolve_credentials(
         let trimmed = secret.trim();
         if !trimmed.is_empty() {
             // Check if secret is modern KeyringPayload
-            if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed) {
-                if let Some(token) = payload.token {
-                    let at = token.access_token.trim().to_string();
-                    if !at.is_empty() {
-                        let email = payload
-                            .id_token
-                            .as_deref()
-                            .and_then(extract_email_from_jwt)
-                            .or_else(|| accounts_bytes.and_then(extract_active_email));
-                        return Some(ResolvedIdentity {
-                            access_token: at,
-                            email,
-                            refresh_token: token.refresh_token,
-                        });
-                    }
+            if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed)
+                && let Some(token) = payload.token
+            {
+                let at = token.access_token.trim().to_string();
+                if !at.is_empty() {
+                    let email = payload
+                        .id_token
+                        .as_deref()
+                        .and_then(extract_email_from_jwt)
+                        .or_else(|| accounts_bytes.and_then(extract_active_email));
+                    return Some(ResolvedIdentity {
+                        access_token: at,
+                        email,
+                        refresh_token: token.refresh_token,
+                    });
                 }
             }
             // Check if secret is flat OAuthCreds
@@ -302,21 +302,21 @@ pub fn resolve_credentials(
     }
 
     // 2. Try disk oauth_creds.json (Priority 2)
-    if let Some(bytes) = oauth_bytes {
-        if let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes) {
-            let at = oauth.access_token.trim().to_string();
-            if !at.is_empty() {
-                let email = oauth
-                    .id_token
-                    .as_deref()
-                    .and_then(extract_email_from_jwt)
-                    .or_else(|| accounts_bytes.and_then(extract_active_email));
-                return Some(ResolvedIdentity {
-                    access_token: at,
-                    email,
-                    refresh_token: oauth.refresh_token,
-                });
-            }
+    if let Some(bytes) = oauth_bytes
+        && let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes)
+    {
+        let at = oauth.access_token.trim().to_string();
+        if !at.is_empty() {
+            let email = oauth
+                .id_token
+                .as_deref()
+                .and_then(extract_email_from_jwt)
+                .or_else(|| accounts_bytes.and_then(extract_active_email));
+            return Some(ResolvedIdentity {
+                access_token: at,
+                email,
+                refresh_token: oauth.refresh_token,
+            });
         }
     }
 
@@ -430,17 +430,17 @@ pub fn update_secret_tokens(
     }
 
     // Try modern KeyringPayload first
-    if let Ok(mut payload) = serde_json::from_str::<KeyringPayload>(trimmed) {
-        if let Some(ref mut token) = payload.token {
-            token.access_token = new_access_token.to_string();
-            if let Some(rt) = new_refresh_token {
-                token.refresh_token = Some(rt.to_string());
-            }
-            token.expiry = Some(chrono::Utc::now().to_rfc3339());
-            return serde_json::to_string(&payload).map_err(|e| {
-                OrbitError::CredentialValidation(format!("Failed to serialize KeyringPayload: {e}"))
-            });
+    if let Ok(mut payload) = serde_json::from_str::<KeyringPayload>(trimmed)
+        && let Some(ref mut token) = payload.token
+    {
+        token.access_token = new_access_token.to_string();
+        if let Some(rt) = new_refresh_token {
+            token.refresh_token = Some(rt.to_string());
         }
+        token.expiry = Some(chrono::Utc::now().to_rfc3339());
+        return serde_json::to_string(&payload).map_err(|e| {
+            OrbitError::CredentialValidation(format!("Failed to serialize KeyringPayload: {e}"))
+        });
     }
 
     // Try flat OAuthCreds

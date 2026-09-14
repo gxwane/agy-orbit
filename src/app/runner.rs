@@ -1,7 +1,7 @@
 use crate::app::SwitchService;
 use crate::domain::credentials::{
-    compute_target_fingerprint, resolve_credentials, validate_keyring_secret_for_sync,
-    CredentialSnapshot, OAuthCreds,
+    CredentialSnapshot, OAuthCreds, compute_target_fingerprint, resolve_credentials,
+    validate_keyring_secret_for_sync,
 };
 use crate::domain::lease::LeaseRecord;
 use crate::domain::orbit::{OrbitMetadata, OrbitName};
@@ -159,19 +159,18 @@ impl<'a> RunService<'a> {
         let _ = lease_guard.release();
 
         // 10. Post-Run Phase 2: Optional Restore
-        if opts.restore {
-            if let Some(ref prev) = previous_orbit {
-                if prev != target_orbit.as_str() {
-                    let switch_svc = SwitchService::new(
-                        self.target,
-                        self.keyring,
-                        self.vault,
-                        self.storage,
-                        self.lease,
-                    );
-                    let _ = switch_svc.switch_to_orbit(prev);
-                }
-            }
+        if opts.restore
+            && let Some(ref prev) = previous_orbit
+            && prev != target_orbit.as_str()
+        {
+            let switch_svc = SwitchService::new(
+                self.target,
+                self.keyring,
+                self.vault,
+                self.storage,
+                self.lease,
+            );
+            let _ = switch_svc.switch_to_orbit(prev);
         }
 
         Ok(exit_code)
@@ -251,21 +250,21 @@ impl<'a> RunService<'a> {
             accounts_bytes.as_deref(),
         );
 
-        if let Some(ref identity) = resolved {
-            if let Some(ref active_email) = identity.email {
-                let index = self.storage.load_index()?;
-                if let Some(orbit_rec) = index.orbits.get(orbit_name.as_str()) {
-                    if &orbit_rec.email != active_email {
-                        eprintln!(
-                            "{} [Two-Way Sync] Warning: active email '{}' does not match orbit '{}' ('{}'). Aborting sync.",
-                            "⚠".yellow(),
-                            active_email,
-                            orbit_name,
-                            orbit_rec.email
-                        );
-                        return Ok(false);
-                    }
-                }
+        if let Some(ref identity) = resolved
+            && let Some(ref active_email) = identity.email
+        {
+            let index = self.storage.load_index()?;
+            if let Some(orbit_rec) = index.orbits.get(orbit_name.as_str())
+                && &orbit_rec.email != active_email
+            {
+                eprintln!(
+                    "{} [Two-Way Sync] Warning: active email '{}' does not match orbit '{}' ('{}'). Aborting sync.",
+                    "⚠".yellow(),
+                    active_email,
+                    orbit_name,
+                    orbit_rec.email
+                );
+                return Ok(false);
             }
         }
 

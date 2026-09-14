@@ -1,9 +1,35 @@
 use crate::error::{OrbitError, Result};
 use std::path::PathBuf;
 
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Debug, Clone, Default)]
+pub struct TestPathsOverride {
+    pub gemini_dir: Option<PathBuf>,
+    pub agyo_dir: Option<PathBuf>,
+    pub runtime_dir: Option<PathBuf>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+static TEST_PATHS: std::sync::RwLock<Option<TestPathsOverride>> = std::sync::RwLock::new(None);
+
+#[cfg(any(test, feature = "test-utils"))]
+pub fn set_test_paths(paths: Option<TestPathsOverride>) {
+    let mut lock = TEST_PATHS.write().unwrap_or_else(|e| e.into_inner());
+    *lock = paths;
+}
+
 /// Resolve the Google Gemini CLI configuration directory (~/.gemini).
 /// Target Plane: narrow surface, strictly managed targets only.
 pub fn get_gemini_dir() -> Result<PathBuf> {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        let lock = TEST_PATHS.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref p) = *lock
+            && let Some(ref dir) = p.gemini_dir
+        {
+            return Ok(dir.clone());
+        }
+    }
     if let Ok(val) = std::env::var("GEMINI_HOME") {
         return Ok(PathBuf::from(val));
     }
@@ -15,6 +41,15 @@ pub fn get_gemini_dir() -> Result<PathBuf> {
 /// Resolve the agy-orbit persistent state root (~/.agyo).
 /// Vault & State Plane: decoupled, independent, easily backed up.
 pub fn get_agyo_dir() -> Result<PathBuf> {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        let lock = TEST_PATHS.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref p) = *lock
+            && let Some(ref dir) = p.agyo_dir
+        {
+            return Ok(dir.clone());
+        }
+    }
     if let Ok(val) = std::env::var("AGYO_HOME") {
         return Ok(PathBuf::from(val));
     }
@@ -46,6 +81,15 @@ pub fn get_journal_path() -> Result<PathBuf> {
 /// Resolve OS ephemeral runtime directory for cross-process lifetime lease locks.
 /// Runtime Plane: RAM-backed / non-roaming / never synced to cloud drives.
 pub fn get_runtime_dir() -> Result<PathBuf> {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        let lock = TEST_PATHS.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref p) = *lock
+            && let Some(ref dir) = p.runtime_dir
+        {
+            return Ok(dir.clone());
+        }
+    }
     if let Ok(val) = std::env::var("AGYO_RUNTIME_DIR") {
         return Ok(PathBuf::from(val));
     }

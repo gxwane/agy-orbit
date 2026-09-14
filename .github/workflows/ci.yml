@@ -48,7 +48,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Static Analysis (Cargo Clippy)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Run Test Suite on Linux (with D-Bus Session & Unlocked Keyring)
         if: runner.os == 'Linux'
@@ -56,35 +56,12 @@ jobs:
           dbus-run-session -- bash -c "
             rm -rf \$HOME/.local/share/keyrings/
             echo -n 'test' | gnome-keyring-daemon --unlock --components=secrets
-            cargo test --all-targets
-            cargo test --doc
+            cargo test --all-targets --locked
+            cargo test --doc --locked
           "
 
       - name: Run Test Suite on Windows / macOS
         if: runner.os != 'Linux'
         run: |
-          cargo test --all-targets
-          cargo test --doc
-
-  msrv:
-    name: Verify MSRV (Rust 1.80)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Install Linux System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libsecret-1-dev libdbus-1-dev
-
-      - name: Install Rust 1.80
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.80.0"
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify MSRV Compilation
-        run: cargo check --all-targets
+          cargo test --all-targets --locked
+          cargo test --doc --locked

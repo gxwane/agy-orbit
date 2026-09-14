@@ -15,10 +15,9 @@ fn test_non_tty_silent_fallback_does_not_block() {
     let bin = get_agyo_bin();
 
     // Invoking `agyo` with no args through std::process::Command creates a piped (non-TTY) environment
-    let output = Command::new(&bin)
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
+    let mut cmd = Command::new(&bin);
+    sandbox.apply_envs(&mut cmd);
+    let output = cmd
         .output()
         .expect("Failed to execute agyo in non-TTY mode");
 
@@ -39,15 +38,13 @@ fn test_recursive_session_blocked() {
     let bin = get_agyo_bin();
 
     // Set recursive session environment markers
-    let output = Command::new(&bin)
-        .arg("use")
-        .arg("work")
-        .env("GEMINI_HOME", &sandbox.gemini_dir)
-        .env("AGYO_HOME", &sandbox.agyo_dir)
-        .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
-        .env("AGYO_SESSION_ACTIVE", "1")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("use").arg("work");
+    sandbox.apply_envs(&mut cmd);
+    cmd.env("AGYO_SESSION_ACTIVE", "1")
         .env("AGYO_SESSION_ORBIT", "personal")
-        .env("AGYO_SESSION_PID", "9999")
+        .env("AGYO_SESSION_PID", "9999");
+    let output = cmd
         .output()
         .expect("Failed to execute agyo with recursive marker");
 

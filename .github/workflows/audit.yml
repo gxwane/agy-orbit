@@ -19,7 +19,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install cargo-audit
-        uses: rust-sec/audit-check@v2.0.0
+      - name: Security Vulnerability Scan (cargo-audit)
+        uses: actions-rust-lang/audit@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          createIssues: false

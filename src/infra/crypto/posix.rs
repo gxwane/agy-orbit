@@ -2,8 +2,8 @@ use crate::error::{OrbitError, Result};
 use crate::infra::storage::paths::get_agyo_dir;
 use crate::ports::vault::VaultPort;
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
@@ -59,7 +59,7 @@ impl PosixVault {
         #[cfg(unix)]
         {
             let uid = unsafe { libc::getuid() };
-            hasher.update(&uid.to_le_bytes());
+            hasher.update(uid.to_le_bytes());
         }
         if let Some(home) = dirs::home_dir() {
             hasher.update(home.to_string_lossy().as_bytes());

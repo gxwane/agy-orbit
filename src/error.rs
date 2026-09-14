@@ -8,7 +8,9 @@ pub enum OrbitError {
     #[error("Cannot locate Orbit home directory (~/.agyo)")]
     AgyoHomeNotFound,
 
-    #[error("Invalid orbit name '{0}': must be 1-64 alphanumeric characters, underscores, or hyphens, without path traversal")]
+    #[error(
+        "Invalid orbit name '{0}': must be 1-64 alphanumeric characters, underscores, or hyphens, without path traversal"
+    )]
     InvalidOrbitName(String),
 
     #[error("Orbit '{0}' not found")]
@@ -33,7 +35,9 @@ pub enum OrbitError {
     #[error("Lease contention: Orbit is currently locked by PID {pid} (Orbit: {orbit})")]
     LeaseActive { pid: u32, orbit: String },
 
-    #[error("Recursive session detected: already running under Orbit '{orbit}' (Parent PID: {pid}). Nested switching is prohibited.")]
+    #[error(
+        "Recursive session detected: already running under Orbit '{orbit}' (Parent PID: {pid}). Nested switching is prohibited."
+    )]
     RecursiveSession { orbit: String, pid: String },
 
     #[error("Credential validation failed: {0}")]

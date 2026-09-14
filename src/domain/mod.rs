@@ -5,8 +5,8 @@ pub mod orbit;
 pub mod quota;
 
 pub use credentials::{
-    compute_target_fingerprint, extract_active_email, CredentialSnapshot, GoogleAccounts,
-    OAuthCreds,
+    CredentialSnapshot, GoogleAccounts, OAuthCreds, compute_target_fingerprint,
+    extract_active_email,
 };
 pub use journal::{JournalEntry, StoredSnapshot, TransactionPhase};
 pub use lease::LeaseRecord;
