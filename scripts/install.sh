@@ -4,7 +4,7 @@
 set -euo pipefail
 
 main() {
-  local VERSION="latest"
+  local VERSION="${AGYO_VERSION:-latest}"
   local FROM_SOURCE=0
 
   while [[ $# -gt 0 ]]; do
@@ -97,7 +97,7 @@ main() {
   local REPO_OWNER="gxwane"
   local REPO_NAME="agy-orbit"
   local ASSET_NAME="agyo-${TARGET}.tar.gz"
-  local CHECKSUM_NAME="${ASSET_NAME}.sha256"
+  local CHECKSUM_NAME="agyo-${TARGET}.sha256"
   local BASE_URL
 
   if [[ "$VERSION" == "latest" ]]; then
@@ -125,19 +125,24 @@ main() {
 
   # Download checksum and archive
   if command -v curl >/dev/null 2>&1; then
-    if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH"; then
-      echo "❌ Download failed for checksum: $CHECKSUM_URL" >&2
-      echo "Please verify that version '$VERSION' exists and asset is available." >&2
-      exit 1
+    if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH" 2>/dev/null; then
+      if ! curl -fsSL "${BASE_URL}/${ASSET_NAME}.sha256" -o "$CHECKSUM_PATH"; then
+        echo "❌ Download failed for checksum: $CHECKSUM_URL" >&2
+        echo "Please verify that version '$VERSION' exists and asset is available." >&2
+        exit 1
+      fi
     fi
     if ! curl -fsSL "$ASSET_URL" -o "$ARCHIVE_PATH"; then
       echo "❌ Download failed for release asset: $ASSET_URL" >&2
       exit 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! wget -q "$CHECKSUM_URL" -O "$CHECKSUM_PATH"; then
-      echo "❌ Download failed for checksum: $CHECKSUM_URL" >&2
-      exit 1
+    if ! wget -q "$CHECKSUM_URL" -O "$CHECKSUM_PATH" 2>/dev/null; then
+      if ! wget -q "${BASE_URL}/${ASSET_NAME}.sha256" -O "$CHECKSUM_PATH"; then
+        echo "❌ Download failed for checksum: $CHECKSUM_URL" >&2
+        echo "Please verify that version '$VERSION' exists and asset is available." >&2
+        exit 1
+      fi
     fi
     if ! wget -q "$ASSET_URL" -O "$ARCHIVE_PATH"; then
       echo "❌ Download failed for release asset: $ASSET_URL" >&2

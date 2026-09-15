@@ -2,7 +2,7 @@
 # Installs prebuilt binary from GitHub Releases or from local source
 [CmdletBinding()]
 param(
-    [string]$Version = "latest",
+    [string]$Version = $(if ($env:AGYO_VERSION) { $env:AGYO_VERSION } else { "latest" }),
     [switch]$FromSource
 )
 
@@ -48,7 +48,7 @@ if ([System.IntPtr]::Size -ne 8) {
 $repoOwner = "gxwane"
 $repoName = "agy-orbit"
 $assetName = "agyo-x86_64-pc-windows-msvc.zip"
-$checksumName = "$assetName.sha256"
+$checksumName = "agyo-x86_64-pc-windows-msvc.sha256"
 
 if ($Version -eq "latest") {
     $baseUrl = "https://github.com/$repoOwner/$repoName/releases/latest/download"
@@ -72,7 +72,11 @@ try {
     Write-Host "  Asset URL: $assetUrl" -ForegroundColor Gray
 
     try {
-        Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumPath -UseBasicParsing
+        try {
+            Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumPath -UseBasicParsing
+        } catch {
+            Invoke-WebRequest -Uri "$baseUrl/$assetName.sha256" -OutFile $checksumPath -UseBasicParsing
+        }
         Invoke-WebRequest -Uri $assetUrl -OutFile $archivePath -UseBasicParsing
     } catch {
         Write-Host "`n❌ Download failed: $($_.Exception.Message)" -ForegroundColor Red
