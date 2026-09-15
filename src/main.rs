@@ -16,16 +16,17 @@ use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
 use agy_orbit::infra::upgrade::{GitHubReleaseAdapter, LocalBinaryReplacer};
 use agy_orbit::ports::{BinaryReplacerPort, StoragePort};
 use agy_orbit::ui::{
-    detect_current_shell, emit_completion_script, install_terminal_panic_hook, is_interactive,
-    render_completion_guide, render_multi_quota_table, render_orbits_table,
-    render_quota_tip_if_multiple, render_quota_view, render_success, render_uninstall_result,
-    render_upgrade_result, render_whoami, select_orbit_interactive,
+    detect_current_shell, emit_completion_script, init_terminal_colors,
+    install_terminal_panic_hook, is_interactive, render_completion_guide, render_multi_quota_table,
+    render_orbits_table, render_quota_tip_if_multiple, render_quota_view, render_success,
+    render_uninstall_result, render_upgrade_result, render_whoami, select_orbit_interactive,
 };
 use std::io::IsTerminal;
 
 fn main() {
-    // 0. Install panic hook to ensure terminal raw mode and cursor are always restored
+    // 0. Install panic hook and initialize console colors
     install_terminal_panic_hook();
+    init_terminal_colors();
 
     if let Err(err) = run_app() {
         eprintln!("{} {}", "Error:".red().bold(), err);
