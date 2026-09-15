@@ -250,10 +250,21 @@ fn extract_host_from_url(url: &str) -> Result<String> {
     let after_scheme = url
         .strip_prefix("https://")
         .ok_or_else(|| OrbitError::SecurityViolation("Expected https:// scheme".into()))?;
-    let host_end = after_scheme
-        .find(['/', ':', '?', '#'])
+
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
-    let host = &after_scheme[..host_end];
+    let authority = &after_scheme[..authority_end];
+
+    // Reject userinfo injection (RFC 3986 Authority check)
+    if authority.contains('@') {
+        return Err(OrbitError::SecurityViolation(
+            "Userinfo in URL authority is forbidden".into(),
+        ));
+    }
+
+    let host_end = authority.find(':').unwrap_or(authority.len());
+    let host = &authority[..host_end];
     if host.is_empty() {
         return Err(OrbitError::SecurityViolation("Empty host in URL".into()));
     }
@@ -282,6 +293,26 @@ mod tests {
         assert!(GitHubReleaseAdapter::validate_url("https://malicious.com/payload.zip").is_err());
         assert!(
             GitHubReleaseAdapter::validate_url("https://169.254.169.254/latest/meta-data").is_err()
+        );
+
+        // Userinfo injection rejected
+        assert!(GitHubReleaseAdapter::validate_url("https://user:pass@github.com/foo").is_err());
+        assert!(
+            GitHubReleaseAdapter::validate_url(
+                "https://objects.githubusercontent.com@evil.com/asset.zip"
+            )
+            .is_err()
+        );
+
+        // Legitimate '@' in path or query parameters allowed
+        assert!(
+            GitHubReleaseAdapter::validate_url("https://github.com/foo/agyo@v1.0.tar.gz").is_ok()
+        );
+        assert!(
+            GitHubReleaseAdapter::validate_url(
+                "https://objects.githubusercontent.com/asset.tar.gz?token=user@host"
+            )
+            .is_ok()
         );
     }
 }

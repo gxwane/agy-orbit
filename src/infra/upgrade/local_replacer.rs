@@ -3,7 +3,6 @@ use crate::error::{OrbitError, Result};
 use crate::ports::upgrade::BinaryReplacerPort;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const MAX_DECOMPRESSED_BINARY_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB (SEC-04)
 
@@ -190,9 +189,15 @@ fn unpack_zip_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>
 
         if enclosed.to_str() == Some(target_binary) && file.is_file() {
             let mut buf = Vec::new();
-            // Read::take prevents decompression bombs (SEC-04)
-            file.take(MAX_DECOMPRESSED_BINARY_SIZE)
+            // Probe with +1 byte to strictly prevent truncation or decompression bombs (SEC-04)
+            file.take(MAX_DECOMPRESSED_BINARY_SIZE + 1)
                 .read_to_end(&mut buf)?;
+            if buf.len() as u64 > MAX_DECOMPRESSED_BINARY_SIZE {
+                return Err(OrbitError::SecurityViolation(format!(
+                    "Decompressed binary exceeds safety limit of {} MiB",
+                    MAX_DECOMPRESSED_BINARY_SIZE / (1024 * 1024)
+                )));
+            }
             return Ok(buf);
         }
     }
@@ -237,11 +242,24 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
             continue;
         }
 
+        // Must be located directly at archive root, allowing optional leading "./" prefix (SEC-02, SEC-03)
+        let parent = path.parent();
+        if parent != Some(Path::new("")) && parent != Some(Path::new(".")) {
+            continue;
+        }
+
         if path.file_name().and_then(|s| s.to_str()) == Some(target_binary) {
             let mut buf = Vec::new();
+            // Probe with +1 byte to strictly prevent truncation or decompression bombs (SEC-04)
             entry
-                .take(MAX_DECOMPRESSED_BINARY_SIZE)
+                .take(MAX_DECOMPRESSED_BINARY_SIZE + 1)
                 .read_to_end(&mut buf)?;
+            if buf.len() as u64 > MAX_DECOMPRESSED_BINARY_SIZE {
+                return Err(OrbitError::SecurityViolation(format!(
+                    "Decompressed binary exceeds safety limit of {} MiB",
+                    MAX_DECOMPRESSED_BINARY_SIZE / (1024 * 1024)
+                )));
+            }
             return Ok(buf);
         }
     }
@@ -254,6 +272,8 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
 /// Windows rename-replace with exponential backoff retry and compensating rollback (SEC-08).
 #[cfg(windows)]
 fn replace_windows_with_rollback(current_exe: &Path, temp_new: &Path) -> Result<()> {
+    use std::time::Duration;
+
     let old_exe = current_exe.with_extension("exe.old");
     if old_exe.exists() {
         let _ = std::fs::remove_file(&old_exe);
@@ -328,5 +348,90 @@ mod tests {
 
         let extracted = unpack_zip_entry(&buf, "agyo.exe").unwrap();
         assert_eq!(extracted, b"my-binary-content");
+    }
+
+    #[test]
+    fn test_valid_targz_single_target_extraction() {
+        let mut gz_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut gz_buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            let data = b"my-unix-binary";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("agyo").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar.append(&header, &data[..]).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let extracted = unpack_targz_entry(&gz_buf, "agyo").unwrap();
+        assert_eq!(extracted, b"my-unix-binary");
+    }
+
+    #[test]
+    fn test_valid_targz_with_curdir_prefix_extraction() {
+        let mut gz_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut gz_buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            let data = b"my-unix-binary-dot";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("./agyo").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar.append(&header, &data[..]).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let extracted = unpack_targz_entry(&gz_buf, "agyo").unwrap();
+        assert_eq!(extracted, b"my-unix-binary-dot");
+    }
+
+    #[test]
+    fn test_tar_slip_rejection() {
+        let mut gz_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut gz_buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            let data = b"bad";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("dummy").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            // Directly craft malicious Tar-Slip path into raw header bytes
+            let raw = header.as_mut_bytes();
+            raw[..100].fill(0);
+            let evil_path = b"../../evil_agyo";
+            raw[..evil_path.len()].copy_from_slice(evil_path);
+            header.set_cksum();
+            tar.append(&header, &data[..]).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let res = unpack_targz_entry(&gz_buf, "evil_agyo");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_tar_nested_directory_rejection() {
+        let mut gz_buf = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut gz_buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            let data = b"nested";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("sub/dir/agyo").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar.append(&header, &data[..]).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let res = unpack_targz_entry(&gz_buf, "agyo");
+        assert!(res.is_err());
     }
 }
