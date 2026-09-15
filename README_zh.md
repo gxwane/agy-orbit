@@ -42,9 +42,43 @@
 
 ## 📦 安装指南
 
-### 前置依赖（仅 Linux）
-在 Linux 系统上，`agy-orbit` 依赖系统的 SecretService (D-Bus) 与 Keyring 基础开发库。源码构建前需安装：
+### 模式一：网络一键自动化安装（推荐）
 
+通过官方生产级安装脚本自动完成架构适配、SHA-256 哈希校验与系统 PATH 配置：
+
+- **Windows (PowerShell)**：
+  ```powershell
+  irm https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/install.ps1 | iex
+  ```
+- **macOS 与 Linux (Bash)**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/install.sh | bash
+  ```
+
+### 模式二：预编译独立二进制下载
+
+可直接在 [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) 下载对应平台的免编译压缩包，解压后将 `agyo`（Windows 为 `agyo.exe`）放置到系统 `PATH` 目录：
+- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
+- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
+- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
+- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
+
+> 💡 安装完成后，后续可直接执行 `agyo upgrade` 进行无缝原地自更新。
+
+### 模式三：通过 Cargo 源码编译安装
+
+```bash
+# 从 crates.io 安装
+cargo install agy-orbit
+
+# 或克隆仓库后本地编译安装
+git clone https://github.com/gxwane/agy-orbit.git
+cd agy-orbit
+cargo install --path .
+```
+
+#### Linux 系统前置依赖
+在 Linux 系统上，`agy-orbit` 依赖系统的 SecretService (D-Bus) 与 Keyring 基础开发库。从源码编译前需确保已安装：
 ```bash
 # Ubuntu / Debian
 sudo apt-get install -y pkg-config libsecret-1-dev libdbus-1-dev
@@ -54,25 +88,6 @@ sudo dnf install -y pkgconf libsecret-devel dbus-devel
 
 # Arch Linux
 sudo pacman -S --needed pkgconf libsecret dbus
-```
-
-### 预编译二进制下载
-可直接在 [GitHub Releases](https://github.com/gxwane/agy-orbit/releases) 下载对应平台的免编译压缩包，解压后将 `agyo`（Windows 为 `agyo.exe`）放置到系统 `PATH` 目录：
-- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
-- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
-- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
-- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
-
-
-### 通过 Cargo 编译安装
-```bash
-# 从 crates.io 安装
-cargo install agy-orbit
-
-# 或本地源码编译安装
-git clone https://github.com/gxwane/agy-orbit.git
-cd agy-orbit
-cargo install --path .
 ```
 
 ---
@@ -121,6 +136,7 @@ agyo quota --all
 | `agyo remove <orbit>` | `rm` | 安全删除指定轨道及其加密快照 |
 | `agyo completion [shell]` | `comp`| 生成 Shell 自动补全脚本（支持 `--raw`，涵盖 bash, zsh, fish, powershell, elvish） |
 | `agyo upgrade` | `update`, `up` | 检查新版本并原地安全自更新（支持 `-c, --check`, `-f, --force`, `-p`） |
+| `agyo uninstall` | `purge` | 安全卸载 agy-orbit 并清理运行时数据（支持 `-y, --yes`, `--keep-vault`, `--dry-run`, `--delete-self`） |
 
 ### 关键参数与选项
 
@@ -145,6 +161,12 @@ agyo quota --all
 - `-f, --force`：即使当前已是最新版，也强制重新下载并覆盖。
 - `-p, --include-prereleases`：检查并允许更新至先行版本（Alpha / Beta / RC）。
 
+#### `agyo uninstall`（别名：`purge`）
+- `-y, --yes`：跳过交互式二次确认，直接执行卸载。
+- `--dry-run`：仅预览将被清理与保留的资源清单，不进行任何实际删除。
+- `--keep-vault`（别名 `--keep-data`）：保留多账号加密快照数据（`~/.agyo/orbits/`）。
+- `--delete-self`：尝试删除当前正在运行的 `agyo` 二进制本身（安全规避 OS 进程文件锁）。
+
 ---
 
 ## 🐚 Shell 自动补全配置
@@ -167,45 +189,72 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
 
 ## 🗑️ 卸载指南 (Uninstallation)
 
-`agy-orbit` 不会注册开机自启、篡改系统注册表或驻留后台守护进程。您可以根据需求选择合适的卸载与清理范围：
+`agy-orbit` 不会注册开机自启、驻留系统守护进程或篡改第三方开发环境。若您需要卸载与清理，可根据实际使用场景自由选择以下模式：
 
-### 选项 1：仅卸载可执行文件
+### 模式一：内置原生 CLI 命令（推荐 — 离线零依赖）
 
-- **通过 Cargo 安装**：
-  ```bash
-  cargo uninstall agy-orbit
-  ```
-- **手动安装预编译包**：
-  直接从系统 `PATH` 目录删除 `agyo`（Windows 为 `agyo.exe`）二进制文件。
-  > 💡 此步骤会完整保留您的多账号加密存储（`~/.agyo/`），未来重新安装即可直接复用。
+`agyo` 内置原子卸载功能，在排他生命周期租约保护下安全清理，防止运行时切号冲突：
 
-### 选项 2：完全清理（删除数据与锁目录）
+```bash
+# 交互式安全卸载（带有操作二次确认与影响范围提示）
+agyo uninstall
 
-- **一键官方安全脚本（推荐）**：
+# 自动化脚本无头全量清理（同时自动移除可执行文件）
+agyo uninstall -y --delete-self
+
+# 仅清理缓存与临时运行时文件，完整保留多账号加密存储
+agyo uninstall --keep-vault
+
+# 试运行（仅预览受影响的文件路径，不执行物理删除）
+agyo uninstall --dry-run
+```
+
+### 模式二：网络一键脚本 / Release 随包独立脚本
+
+若可执行文件已被移走，或希望脱离 CLI 二进制单独清理：
+
+- **Windows (PowerShell)**：
   ```powershell
-  # Windows PowerShell
+  # 远程一键卸载脚本
+  irm https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/uninstall.ps1 | iex
+
+  # 或运行官方 Release 压缩包内附带的离线卸载脚本
   powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
   ```
+- **macOS 与 Linux (Bash)**：
   ```bash
-  # macOS / Linux
+  # 远程一键卸载脚本
+  curl -fsSL https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/uninstall.sh | bash
+
+  # 或运行官方 Release 压缩包内附带的离线卸载脚本
   ./scripts/uninstall.sh
   ```
-- **手动清理命令**：
-  - **Windows (PowerShell)**：
-    ```powershell
-    # 1. 删除加密存储目录
-    Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
-    # 2. 清理运行期易失锁目录
-    Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
-    ```
-  - **macOS / Linux**：
-    ```bash
-    # 1. 删除加密存储目录
-    rm -rf ~/.agyo
-    # 2. 清理运行期易失锁目录
-    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
-    rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
-    ```
+
+### 模式三：透明原生 Shell 命令（手动）
+
+- **Windows (PowerShell)**：
+  ```powershell
+  # 1. 移除二进制及 PATH 目录
+  Remove-Item -Force "$HOME\.agyo\bin\agyo.exe" -ErrorAction SilentlyContinue
+
+  # 2. 删除加密数据目录（若需保留账号可跳过此步）
+  Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
+
+  # 3. 清理运行期易失锁目录
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
+  ```
+- **macOS 与 Linux (Bash)**：
+  ```bash
+  # 1. 移除可执行二进制
+  rm -f ~/.local/bin/agyo /usr/local/bin/agyo
+
+  # 2. 删除加密数据目录（若需保留账号可跳过此步）
+  rm -rf ~/.agyo
+
+  # 3. 清理运行期易失锁目录
+  rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
+  rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
+  ```
 
 ### 清理 Shell 自动补全配置
 
@@ -216,7 +265,7 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
 
 > [!NOTE]
 > **关于 Google Antigravity 官方凭据独立性**  
-> `agy-orbit` 遵循最小介入面（Narrow Surface）设计，卸载 `agyo` **不会**注销或删除当前正在被 Google Antigravity 使用的官方凭据（`~/.gemini/` 及系统密钥环中的当前会话）。卸载后官方 `agy` 会话仍将完全保持登录状态；若需从本机彻底登出 Google 账号，请直接执行官方命令：`agy auth logout`。
+> `agy-orbit` 遵循严格工程承诺（The Contractual Invariant）。卸载 `agyo` **绝不会**触碰、注销或删除当前正在被 Google Antigravity 使用的官方凭据（`~/.gemini/` 及系统密钥环中的当前会话）。卸载后官方 `agy` 会话仍将完全保持登录状态；若需从本机彻底登出 Google 账号，请直接执行官方命令：`agy auth logout`。
 
 ---
 

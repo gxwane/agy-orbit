@@ -61,6 +61,9 @@ pub enum OrbitError {
     #[error("Upgrade error: {0}")]
     Upgrade(String),
 
+    #[error("Usage error: {0}")]
+    Usage(String),
+
     #[error("Security violation: {0}")]
     SecurityViolation(String),
 

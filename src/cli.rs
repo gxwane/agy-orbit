@@ -146,6 +146,30 @@ pub enum Commands {
         include_prereleases: bool,
     },
 
+    /// Safely uninstall agy-orbit and clean runtime data
+    #[command(
+        visible_aliases = ["purge"],
+        long_about = "Safely uninstall agy-orbit and clean up runtime data, locks, and multi-account storage.\n\
+                      Note: Official Google Antigravity credentials in ~/.gemini/ are kept intact."
+    )]
+    Uninstall {
+        /// Automatically confirm uninstallation without interactive prompts
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+
+        /// Preview changes without deleting any files
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Preserve encrypted multi-account vaults and orbits (~/.agyo/orbits/)
+        #[arg(long = "keep-vault", visible_alias = "keep-data")]
+        keep_vault: bool,
+
+        /// Attempt to remove the running executable binary itself
+        #[arg(long)]
+        delete_self: bool,
+    },
+
     /// Internal fast query for shell completions (outputs orbit names only)
     #[command(hide = true, name = "__complete-orbits")]
     CompleteOrbits,

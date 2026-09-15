@@ -42,9 +42,43 @@ When using Google Antigravity CLI (`agy`) for intensive AI coding:
 
 ## 📦 Installation
 
-### Prerequisites (Linux Only)
-On Linux distributions, `agy-orbit` utilizes system SecretService (D-Bus) for secure keyring integration. Install the required build libraries:
+### Mode 1: Automated One-Liner (Recommended)
 
+Fast, secure web installation with SHA-256 integrity verification and automated PATH configuration:
+
+- **Windows (PowerShell)**:
+  ```powershell
+  irm https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/install.ps1 | iex
+  ```
+- **macOS & Linux (Bash)**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/install.sh | bash
+  ```
+
+### Mode 2: Prebuilt Standalone Binaries
+
+Download standalone release archives directly from [GitHub Releases](https://github.com/gxwane/agy-orbit/releases), extract, and place `agyo` (`agyo.exe` on Windows) anywhere in your system `PATH`:
+- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
+- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
+- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
+- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
+
+> 💡 After installing the binary, you can keep it up to date at any time by running `agyo upgrade`.
+
+### Mode 3: From Source via Cargo
+
+```bash
+# Install from crates.io
+cargo install agy-orbit
+
+# Or build locally from git repository
+git clone https://github.com/gxwane/agy-orbit.git
+cd agy-orbit
+cargo install --path .
+```
+
+#### Linux System Prerequisites
+On Linux distributions, `agy-orbit` utilizes system SecretService (D-Bus) for secure keyring integration. If building from source, ensure development headers are installed:
 ```bash
 # Ubuntu / Debian
 sudo apt-get install -y pkg-config libsecret-1-dev libdbus-1-dev
@@ -54,24 +88,6 @@ sudo dnf install -y pkgconf libsecret-devel dbus-devel
 
 # Arch Linux
 sudo pacman -S --needed pkgconf libsecret dbus
-```
-
-### Prebuilt Binaries
-Download standalone release archives from [GitHub Releases](https://github.com/gxwane/agy-orbit/releases), extract, and place the `agyo` binary (`agyo.exe` on Windows) somewhere in your system `PATH`:
-- **Windows (x86_64 MSVC)**: `agyo-x86_64-pc-windows-msvc.zip`
-- **macOS (Apple Silicon)**: `agyo-aarch64-apple-darwin.tar.gz`
-- **macOS (Intel x86_64)**: `agyo-x86_64-apple-darwin.tar.gz`
-- **Linux (x86_64 glibc)**: `agyo-x86_64-unknown-linux-gnu.tar.gz`
-
-### From Source via Cargo
-```bash
-# Install from crates.io
-cargo install agy-orbit
-
-# Or build locally from clone
-git clone https://github.com/gxwane/agy-orbit.git
-cd agy-orbit
-cargo install --path .
 ```
 
 ---
@@ -120,6 +136,7 @@ agyo quota --all
 | `agyo remove <orbit>` | `rm` | Safely delete a saved Orbit profile |
 | `agyo completion [shell]` | `comp`| Generate shell completion script (`--raw`, supports bash, zsh, fish, powershell, elvish) |
 | `agyo upgrade` | `update`, `up` | Check for updates and self-upgrade binary in-place (`-c, --check`, `-f, --force`, `-p`) |
+| `agyo uninstall` | `purge` | Safely uninstall agy-orbit and clean runtime data (`-y, --yes`, `--keep-vault`, `--dry-run`, `--delete-self`) |
 
 ### Detailed Flags & Options
 
@@ -144,6 +161,12 @@ agyo quota --all
 - `-f, --force`: Force reinstall or upgrade even if already on the latest version.
 - `-p, --include-prereleases`: Include pre-release versions (Alpha / Beta / RC).
 
+#### `agyo uninstall` (alias: `purge`)
+- `-y, --yes`: Automatically confirm uninstallation without interactive prompts.
+- `--dry-run`: Preview resources that would be affected without deleting any files.
+- `--keep-vault` (alias `--keep-data`): Preserve encrypted multi-account vaults and orbits (`~/.agyo/orbits/`).
+- `--delete-self`: Remove the running executable binary itself (handles OS file locking safely).
+
 ---
 
 ## 🐚 Shell Completion Setup
@@ -166,50 +189,77 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
 
 ## 🗑️ Uninstallation
 
-`agy-orbit` creates no startup entries, registry modifications, or background daemons. To uninstall, choose the cleanup scope that fits your needs:
+`agy-orbit` creates no background daemons or stealth persistence. When you need to remove it, choose the method that best matches your workflow:
 
-### Option 1: Remove Binary Only
+### Mode 1: Built-in Native CLI Command (Recommended — Zero Dependency)
 
-- **Installed via Cargo**:
-  ```bash
-  cargo uninstall agy-orbit
-  ```
-- **Installed via Prebuilt Releases**:
-  Simply delete the `agyo` (or `agyo.exe`) binary from your `$PATH` directory.
-  > 💡 This preserves your encrypted multi-account storage (`~/.agyo/`), allowing seamless reuse after reinstallation.
+`agyo` comes with a built-in uninstaller that operates under an exclusive lifetime lease lock and performs guarded, safe teardown:
 
-### Option 2: Full Teardown (Remove Data & Locks)
+```bash
+# Interactive uninstallation with confirmation
+agyo uninstall
 
-- **One-click official safe uninstaller (recommended)**:
+# Unattended removal for scripts and automation (also deletes binary)
+agyo uninstall -y --delete-self
+
+# Remove runtime data and cache while preserving encrypted multi-account credentials
+agyo uninstall --keep-vault
+
+# Preview actions without deleting anything
+agyo uninstall --dry-run
+```
+
+### Mode 2: Remote Web One-Liner / Bundled Script
+
+If the binary has already been deleted or you prefer a standalone script:
+
+- **Windows (PowerShell)**:
   ```powershell
-  # Windows PowerShell
+  # Remote one-liner
+  irm https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/uninstall.ps1 | iex
+
+  # Or using the uninstaller script bundled in release archives
   powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
   ```
+- **macOS & Linux (Bash)**:
   ```bash
-  # macOS / Linux
+  # Remote one-liner
+  curl -fsSL https://raw.githubusercontent.com/gxwane/agy-orbit/master/scripts/uninstall.sh | bash
+
+  # Or using the uninstaller script bundled in release archives
   ./scripts/uninstall.sh
   ```
-- **Manual cleanup commands**:
-  - **Windows (PowerShell)**:
-    ```powershell
-    # 1. Remove encrypted storage
-    Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
-    # 2. Remove ephemeral runtime locks
-    Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
-    ```
-  - **macOS / Linux**:
-    ```bash
-    # 1. Remove encrypted storage
-    rm -rf ~/.agyo
-    # 2. Remove ephemeral runtime locks
-    rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
-    rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
-    ```
+
+### Mode 3: Transparent Native Shell Commands (Manual)
+
+- **Windows (PowerShell)**:
+  ```powershell
+  # 1. Remove binary and PATH directory
+  Remove-Item -Force "$HOME\.agyo\bin\agyo.exe" -ErrorAction SilentlyContinue
+
+  # 2. Remove encrypted storage (or skip to keep credentials)
+  Remove-Item -Recurse -Force "$HOME\.agyo" -ErrorAction SilentlyContinue
+
+  # 3. Clean runtime locks
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agy-orbit" -ErrorAction SilentlyContinue
+  ```
+- **macOS & Linux (Bash)**:
+  ```bash
+  # 1. Remove executable binary
+  rm -f ~/.local/bin/agyo /usr/local/bin/agyo
+
+  # 2. Remove encrypted storage (or skip to keep credentials)
+  rm -rf ~/.agyo
+
+  # 3. Clean runtime locks
+  rm -rf "${XDG_RUNTIME_DIR:-/tmp}/agyo" 2>/dev/null || true
+  rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
+  ```
 
 ### Clean Up Shell Completion
 
-If you previously configured shell completion, remove the corresponding lines from your shell profile to prevent startup errors:
-- **PowerShell**: Open `$PROFILE` and remove any line referencing `agyo completion` or `.agyo\completion.ps1`.
+If you previously configured shell completion, remove the corresponding line from your shell profile:
+- **PowerShell**: Open `$PROFILE` and remove lines referencing `agyo completion` or `.agyo\completion.ps1`.
 - **Bash / Zsh**: Remove `agyo completion` lines from `~/.bashrc` or `~/.zshrc`, or delete `~/.local/share/bash-completion/completions/agyo`.
 - **Fish**: Delete `~/.config/fish/completions/agyo.fish`.
 

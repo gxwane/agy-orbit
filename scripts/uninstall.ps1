@@ -1,10 +1,10 @@
-# agy-orbit Safe Uninstaller (PowerShell)
-# Compliant with Windows MSVC environments & strict error handling
+# agy-orbit Windows Uninstaller (PowerShell)
+# Compliant with Windows MSVC environments, safe path guards, and registry preservation
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [switch]$Force,
-    [Alias("KeepVault")]
-    [switch]$KeepData  # Allow keeping user's multi-account encrypted storage
+    [Alias("KeepData")]
+    [switch]$KeepVault  # Allow keeping user's multi-account encrypted storage
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +12,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "`n===============================================" -ForegroundColor Cyan
-Write-Host "       agy-orbit (agyo) Safe Uninstaller       " -ForegroundColor Cyan
+Write-Host "       agy-orbit (agyo) Windows Uninstaller    " -ForegroundColor Cyan
 Write-Host "===============================================`n" -ForegroundColor Cyan
 
 # 1. Check for running agyo process(es)
@@ -70,45 +70,108 @@ function Remove-SafeDirectory {
     }
 }
 
-# 3. Uninstall binary
-Write-Host "[1/4] Uninstalling binary..." -ForegroundColor Cyan
-$cargoInstalled = $false
+# 3. Uninstall binary (one-liner install directory ~/.agyo/bin + Cargo)
+Write-Host "[1/5] Removing binary files..." -ForegroundColor Cyan
+$userHome = [System.Environment]::GetFolderPath('UserProfile')
+$agyoBinExe = Join-Path $userHome ".agyo\bin\agyo.exe"
+$agyoBinDir = Join-Path $userHome ".agyo\bin"
+
+if (Test-Path -LiteralPath $agyoBinExe) {
+    Remove-Item -LiteralPath $agyoBinExe -Force -ErrorAction SilentlyContinue
+    Write-Host "  ✓ Removed executable: $agyoBinExe" -ForegroundColor Green
+}
+if ((Test-Path -LiteralPath $agyoBinDir) -and (Get-ChildItem -LiteralPath $agyoBinDir -ErrorAction SilentlyContinue).Count -eq 0) {
+    Remove-Item -LiteralPath $agyoBinDir -Force -ErrorAction SilentlyContinue
+}
+
+# Check if installed via Cargo
 if (Get-Command cargo -ErrorAction SilentlyContinue) {
     $uninstallResult = & cargo uninstall agy-orbit 2>&1
     if ($LASTEXITCODE -eq 0) {
-        $cargoInstalled = $true
-        Write-Host "  ✓ Successfully uninstalled agy-orbit via cargo." -ForegroundColor Green
+        Write-Host "  ✓ Successfully uninstalled agy-orbit via Cargo." -ForegroundColor Green
     }
 }
 
-if (-not $cargoInstalled) {
-    $agyoCmd = Get-Command agyo -ErrorAction SilentlyContinue
-    if ($agyoCmd) {
-        Write-Host "  Notice: Standalone agyo binary found at: $($agyoCmd.Source)" -ForegroundColor Gray
-        Write-Host "  Please manually remove the binary if it was not installed via Cargo." -ForegroundColor Gray
-    } else {
-        Write-Host "  ✓ No cargo-managed agyo binary found in current PATH." -ForegroundColor Gray
+# 4. Remove User PATH registration from Registry
+Write-Host "`n[2/5] Cleaning Environment PATH..." -ForegroundColor Cyan
+$envSubKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+if ($envSubKey) {
+    try {
+        $rawPath = $envSubKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $regKind = $envSubKey.GetValueKind('Path')
+    } catch {
+        $rawPath = ''
+        $regKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
     }
+
+    if ($null -eq $regKind -or $regKind -eq [Microsoft.Win32.RegistryValueKind]::None) {
+        $regKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    }
+
+    if ($rawPath) {
+        $parts = $rawPath -split ';'
+        $cleanedParts = @()
+        $found = $false
+        foreach ($p in $parts) {
+            $trimmed = $p.Trim()
+            if ($trimmed -ieq $agyoBinDir -or $trimmed -ieq "%USERPROFILE%\.agyo\bin" -or $trimmed -ieq '$HOME\.agyo\bin') {
+                $found = $true
+            } elseif (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $cleanedParts += $trimmed
+            }
+        }
+
+        if ($found) {
+            $newPath = $cleanedParts -join ';'
+            $envSubKey.SetValue('Path', $newPath, $regKind)
+            Write-Host "  ✓ Removed Orbit binary directory from User PATH." -ForegroundColor Green
+
+            # Broadcast WM_SETTINGCHANGE
+            try {
+                Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd,
+    uint Msg,
+    System.IntPtr wParam,
+    string lParam,
+    uint fuFlags,
+    uint uTimeout,
+    out System.IntPtr lpdwResult
+);
+"@ -ErrorAction SilentlyContinue
+
+                $HWND_BROADCAST = [System.IntPtr]0xffff
+                $WM_SETTINGCHANGE = 0x001a
+                $SMTO_ABORTIFHUNG = 0x0002
+                $sendResult = [System.IntPtr]::Zero
+                [Win32.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [System.IntPtr]::Zero, 'Environment', $SMTO_ABORTIFHUNG, 2000, [ref]$sendResult) | Out-Null
+            } catch {
+                # Non-fatal
+            }
+        } else {
+            Write-Host "  ✓ No Orbit directory entry found in User PATH." -ForegroundColor Gray
+        }
+    }
+    $envSubKey.Close()
 }
 
-# 4. Clean ephemeral runtime locks (%LOCALAPPDATA%\agy-orbit)
-Write-Host "`n[2/4] Cleaning ephemeral runtime locks..." -ForegroundColor Cyan
+# 5. Clean ephemeral runtime locks (%LOCALAPPDATA%\agy-orbit)
+Write-Host "`n[3/5] Cleaning ephemeral runtime locks..." -ForegroundColor Cyan
 if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     Remove-SafeDirectory -Path (Join-Path $env:LOCALAPPDATA "agy-orbit") -ExpectedSuffix "agy-orbit" -Description "Runtime directory"
 }
-# Fallback temp runtime directory
 $tempFallback = Join-Path ([System.IO.Path]::GetTempPath()) "agy-orbit-run"
 if (Test-Path -LiteralPath $tempFallback) {
     Remove-SafeDirectory -Path $tempFallback -ExpectedSuffix "agy-orbit-run" -Description "Fallback temp runtime directory"
 }
 
-# 5. Clean Orbit storage directory (~/.agyo)
-Write-Host "`n[3/4] Checking Orbit storage data (~/.agyo)..." -ForegroundColor Cyan
-$homeDir = [System.Environment]::GetFolderPath('UserProfile')
-if (-not [string]::IsNullOrWhiteSpace($homeDir)) {
-    $agyoDir = Join-Path $homeDir ".agyo"
+# 6. Clean Orbit storage directory (~/.agyo)
+Write-Host "`n[4/5] Checking Orbit storage data (~/.agyo)..." -ForegroundColor Cyan
+if (-not [string]::IsNullOrWhiteSpace($userHome)) {
+    $agyoDir = Join-Path $userHome ".agyo"
     if (Test-Path -LiteralPath $agyoDir) {
-        if ($KeepData) {
+        if ($KeepVault) {
             Write-Host "  [i] User requested to preserve Orbit storage at: $agyoDir" -ForegroundColor Cyan
         } else {
             $proceedDelete = $Force
@@ -129,8 +192,8 @@ if (-not [string]::IsNullOrWhiteSpace($homeDir)) {
     }
 }
 
-# 6. Shell completion inspection & warning (Non-destructive: never silently mutate user profile)
-Write-Host "`n[4/4] Inspecting Shell Profile configuration..." -ForegroundColor Cyan
+# 7. Shell completion inspection & warning (Non-destructive: never silently mutate user profile)
+Write-Host "`n[5/5] Inspecting Shell Profile configuration..." -ForegroundColor Cyan
 if ($PROFILE -and (Test-Path -LiteralPath $PROFILE)) {
     $profileContent = Get-Content -LiteralPath $PROFILE -Raw -ErrorAction SilentlyContinue
     if ($profileContent -and ($profileContent -match 'agyo completion' -or $profileContent -match '\.agyo\\completion\.ps1')) {

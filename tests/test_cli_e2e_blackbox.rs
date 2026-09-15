@@ -102,3 +102,34 @@ fn test_cli_invalid_orbit_name_rejected() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Invalid orbit name"));
 }
+
+#[test]
+fn test_cli_uninstall_dry_run() {
+    let sandbox = TestSandbox::new();
+    let bin = get_agyo_bin();
+
+    // Test 'agyo uninstall --dry-run'
+    let mut cmd = Command::new(&bin);
+    cmd.args(["uninstall", "--dry-run"]);
+    apply_sandbox_envs(&mut cmd, &sandbox);
+    let output = cmd
+        .output()
+        .expect("Failed to execute agyo uninstall --dry-run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Uninstallation Plan (dry-run)"));
+    assert!(stdout.contains("Dry run complete. No files were deleted."));
+
+    // Test alias 'agyo purge --dry-run'
+    let mut cmd_purge = Command::new(&bin);
+    cmd_purge.args(["purge", "--dry-run"]);
+    apply_sandbox_envs(&mut cmd_purge, &sandbox);
+    let output_purge = cmd_purge
+        .output()
+        .expect("Failed to execute agyo purge --dry-run");
+
+    assert!(output_purge.status.success());
+    let stdout_purge = String::from_utf8_lossy(&output_purge.stdout);
+    assert!(stdout_purge.contains("Uninstallation Plan (dry-run)"));
+}

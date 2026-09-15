@@ -3,7 +3,8 @@ use colored::Colorize;
 
 use agy_orbit::app::{
     QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions, RunService,
-    SnapshotService, SwitchService, UpgradeOptions, UpgradeService,
+    SnapshotService, SwitchService, UninstallOptions, UninstallService, UpgradeOptions,
+    UpgradeService,
 };
 use agy_orbit::cli::{Cli, Commands};
 use agy_orbit::error::Result;
@@ -17,8 +18,8 @@ use agy_orbit::ports::{BinaryReplacerPort, StoragePort};
 use agy_orbit::ui::{
     detect_current_shell, emit_completion_script, install_terminal_panic_hook, is_interactive,
     render_completion_guide, render_multi_quota_table, render_orbits_table,
-    render_quota_tip_if_multiple, render_quota_view, render_success, render_upgrade_result,
-    render_whoami, select_orbit_interactive,
+    render_quota_tip_if_multiple, render_quota_view, render_success, render_uninstall_result,
+    render_upgrade_result, render_whoami, select_orbit_interactive,
 };
 use std::io::IsTerminal;
 
@@ -185,6 +186,73 @@ fn run_app() -> Result<()> {
                 include_prereleases,
             })?;
             render_upgrade_result(&result, current_exe.as_deref());
+            Ok(())
+        }
+        Some(Commands::Uninstall {
+            yes,
+            dry_run,
+            keep_vault,
+            delete_self,
+        }) => {
+            if !yes && !dry_run {
+                if !is_interactive() {
+                    return Err(agy_orbit::error::OrbitError::Usage(
+                        "Uninstallation requires confirmation. Run in an interactive terminal or pass -y/--yes."
+                            .into(),
+                    ));
+                }
+                println!(
+                    "\n{}",
+                    "===============================================".cyan()
+                );
+                println!(
+                    "{}",
+                    "       agy-orbit (agyo) Safe Uninstaller       "
+                        .cyan()
+                        .bold()
+                );
+                println!(
+                    "{}\n",
+                    "===============================================".cyan()
+                );
+                if keep_vault {
+                    println!(
+                        "Orbit multi-account vault credentials will be preserved (--keep-vault)."
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        "⚠️  WARNING: All encrypted multi-account credentials in ~/.agyo will be permanently deleted!"
+                            .yellow()
+                            .bold()
+                    );
+                }
+                println!(
+                    "{}",
+                    "Note: Official Google Antigravity credentials in ~/.gemini/ are kept intact.\n"
+                        .dimmed()
+                );
+
+                let confirmed =
+                    inquire::Confirm::new("Are you sure you want to proceed with uninstallation?")
+                        .with_default(false)
+                        .prompt()
+                        .unwrap_or_default();
+
+                if !confirmed {
+                    println!("Uninstallation cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let service = UninstallService::new(&lease);
+            let result = service.execute_uninstall(UninstallOptions {
+                yes,
+                dry_run,
+                keep_vault,
+                delete_self,
+            })?;
+            render_uninstall_result(&result);
             Ok(())
         }
         Some(Commands::CompleteOrbits) => {

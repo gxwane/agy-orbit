@@ -1,5 +1,5 @@
 use crate::error::{OrbitError, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone, Default)]
@@ -220,6 +220,101 @@ pub fn get_quota_cache_path(name: &str) -> Result<PathBuf> {
     Ok(get_cache_dir()?.join(format!("quota_{name}.json")))
 }
 
+/// Remove a directory with strict security guardrails against catastrophic path deletion.
+///
+/// Guardrails:
+/// 1. Path must not be empty and must be absolute.
+/// 2. Must not be a system root (e.g. `/` or `C:\`) or user home directory.
+/// 3. Path length must be >= 4.
+/// 4. Basename must match an expected safe name (e.g. `.agyo`, `agy-orbit`, `agy-orbit-run`,
+///    `agyo-run-*`, `cache`, `orbits`, `bin`) or reside strictly inside the resolved Orbit directory.
+/// 5. If target path is a symlink, only the link node is removed without traversing into the target.
+pub fn remove_guarded_directory(dir: &Path) -> Result<()> {
+    if !dir.is_absolute() {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Refusing to remove non-absolute path: {dir:?}"
+        )));
+    }
+
+    if dir.parent().is_none() {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Target directory is a system root: {dir:?}"
+        )));
+    }
+
+    if let Some(home) = dirs::home_dir()
+        && dir == home
+    {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Target directory is the user home directory: {dir:?}"
+        )));
+    }
+
+    let temp = std::env::temp_dir();
+    if dir == temp {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Target directory is the system temporary directory: {dir:?}"
+        )));
+    }
+
+    let path_str = dir.to_string_lossy();
+    if path_str.len() < 4 {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Path length too short: {dir:?}"
+        )));
+    }
+
+    let file_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let is_safe_name = file_name == ".agyo"
+        || file_name == "agy-orbit"
+        || file_name == "agy-orbit-run"
+        || file_name.starts_with("agyo-run-")
+        || file_name == "cache"
+        || file_name == "orbits"
+        || file_name == "bin";
+
+    let is_inside_agyo = if let Ok(agyo_dir) = get_agyo_dir() {
+        dir.starts_with(&agyo_dir)
+    } else {
+        false
+    };
+
+    if !is_safe_name && !is_inside_agyo {
+        return Err(OrbitError::SecurityViolation(format!(
+            "Target path '{dir:?}' does not match safe directory naming rules"
+        )));
+    }
+
+    if !dir.exists() && std::fs::symlink_metadata(dir).is_err() {
+        return Ok(());
+    }
+
+    let meta = std::fs::symlink_metadata(dir)?;
+    if meta.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            if meta.is_dir() {
+                std::fs::remove_dir(dir)?;
+            } else {
+                std::fs::remove_file(dir)?;
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::remove_file(dir)?;
+        }
+        return Ok(());
+    }
+
+    if meta.is_dir() {
+        std::fs::remove_dir_all(dir)?;
+    } else {
+        std::fs::remove_file(dir)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +332,51 @@ mod tests {
 
         let index = get_index_path().unwrap();
         assert_eq!(index, agyo.join("index.json"));
+    }
+
+    #[test]
+    fn test_remove_guarded_directory_safety() {
+        // 1. Non-existent path returns Ok
+        let non_existent = std::env::temp_dir().join("agyo-run-12345");
+        assert!(remove_guarded_directory(&non_existent).is_ok());
+
+        // 2. Reject non-absolute path
+        let relative = Path::new("relative/.agyo");
+        assert!(matches!(
+            remove_guarded_directory(relative),
+            Err(OrbitError::SecurityViolation(_))
+        ));
+
+        // 3. Reject root path
+        #[cfg(windows)]
+        let root = Path::new("C:\\");
+        #[cfg(not(windows))]
+        let root = Path::new("/");
+        assert!(matches!(
+            remove_guarded_directory(root),
+            Err(OrbitError::SecurityViolation(_))
+        ));
+
+        // 4. Reject home directory
+        if let Some(home) = dirs::home_dir() {
+            assert!(matches!(
+                remove_guarded_directory(&home),
+                Err(OrbitError::SecurityViolation(_))
+            ));
+        }
+
+        // 5. Reject arbitrary path outside naming whitelist
+        let temp_safe = std::env::temp_dir().join("some_random_unsafe_folder_xyz");
+        std::fs::create_dir_all(&temp_safe).unwrap();
+        let result = remove_guarded_directory(&temp_safe);
+        let _ = std::fs::remove_dir(&temp_safe);
+        assert!(matches!(result, Err(OrbitError::SecurityViolation(_))));
+
+        // 6. Safe removal of valid named folder
+        let temp_agyo = std::env::temp_dir().join("agy-orbit-run");
+        std::fs::create_dir_all(&temp_agyo).unwrap();
+        assert!(temp_agyo.exists());
+        assert!(remove_guarded_directory(&temp_agyo).is_ok());
+        assert!(!temp_agyo.exists());
     }
 }
