@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Two-Way Credential Capture**: Automatic detection and reverse synchronization of dynamically refreshed OAuth tokens upon child process exit.
 - **Platform-Native Cryptographic Storage**:
   - Windows: Native DPAPI (`CryptProtectData`) with CurrentUser scope, zero UI popup, and memory buffer volatile-zeroization.
-  - POSIX (macOS / Linux / BSD): NIST SP 800-38D AES-256-GCM authenticated encryption with 3-tier entropy waterfall (machine ID + kernel UID + persistent home directory + CSPRNG seed).
+  - POSIX (macOS / Linux / BSD): AES-256-GCM authenticated encryption derived from machine ID, kernel UID, and persistent seed fallback.
 - **Reverse Quota Engine (`agyo quota`)**:
   - Live model quota consumption status via Google Cloud Code PA endpoint fallback chain.
   - Read-only access token invariant (zero token exchange / zero refresh risk).
@@ -26,4 +26,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Non-TTY / Pipes: Silent, non-blocking plaintext fallback (`whoami`).
   - Full first-class CLI aliases (`s`, `u`/`sw`, `ls`, `w`, `r`, `q`, `rm`, `comp`).
 - **Dynamic Shell Completion**: Native script generation for Bash, Zsh, Fish, PowerShell, and Elvish with smart runtime auto-detection.
-- **Clean Craftsmanship Quality Suite**: 100% Clippy zero-warning policy, strict formatting checks, and 64 automated unit & end-to-end integration tests.
+- **Automated Quality Suite**: Clippy zero-warning enforcement, automated formatting checks, and full unit & integration test coverage.

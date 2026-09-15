@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
-/// Mock release provider simulating GitHub Releases in-memory (0 network, 0 unsafe).
+/// In-memory mock release provider simulating GitHub Releases for isolated testing.
 struct MockReleaseProvider {
     releases: Vec<ReleaseInfo>,
     assets: HashMap<String, Vec<u8>>,

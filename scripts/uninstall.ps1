@@ -33,7 +33,7 @@ if ($running) {
     }
 }
 
-# 2. Guarded safe directory removal function (anti-empty, anti-short, anti-root)
+# 2. Guarded safe directory removal with validation against root and invalid paths
 function Remove-SafeDirectory {
     param(
         [string]$Path,

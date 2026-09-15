@@ -75,7 +75,7 @@ impl<'a> UpgradeService<'a> {
             OrbitError::Internal("Failed to parse compile-time CARGO_PKG_VERSION".into())
         })?;
 
-        // 1. Two-stage pre-flight probe: ensure target location is writable BEFORE downloading (SEC-05)
+        // 1. Verify target directory permissions before downloading assets
         if !opts.check {
             self.replacer.preflight_permission_check()?;
         }
@@ -143,7 +143,7 @@ impl<'a> UpgradeService<'a> {
         // 7. Download release archive asset
         let archive_bytes = self.provider.download_asset(&archive_asset.download_url)?;
 
-        // 8. Strict SHA-256 verification (CC-SEC-01)
+        // 8. Verify asset SHA-256 checksum
         if !Sha256Verifier::verify(&archive_bytes, &expected_sha256) {
             return Err(OrbitError::SecurityViolation(
                 "SHA-256 checksum mismatch! Downloaded asset may be corrupted or tampered with."
@@ -151,10 +151,10 @@ impl<'a> UpgradeService<'a> {
             ));
         }
 
-        // 9. Single-target safe decompression (SEC-02, SEC-03, SEC-04)
+        // 9. Unpack executable from release archive
         let new_binary = self.replacer.unpack_binary(&archive_bytes, triple)?;
 
-        // 10. Atomic in-place replacement with rollback (SEC-06, SEC-07, SEC-08)
+        // 10. Replace current executable in-place
         self.replacer.replace_binary(&new_binary)?;
 
         Ok(UpgradeResult::Upgraded {

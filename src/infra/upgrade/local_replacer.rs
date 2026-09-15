@@ -4,7 +4,7 @@ use crate::ports::upgrade::BinaryReplacerPort;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const MAX_DECOMPRESSED_BINARY_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB (SEC-04)
+const MAX_DECOMPRESSED_BINARY_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB safety ceiling
 
 /// Local binary file replacer executing safe extraction, permission checks, and atomic replacement.
 pub struct LocalBinaryReplacer {
@@ -39,7 +39,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
         }
     }
 
-    /// Two-stage pre-flight probe check before consuming download bandwidth (SEC-05).
+    /// Probe write access in the executable's parent directory before downloading.
     fn preflight_permission_check(&self) -> Result<()> {
         let exe = self.current_exe_path()?;
         let parent = exe.parent().ok_or_else(|| {
@@ -81,7 +81,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
         }
     }
 
-    /// Single-target safe decompression strictly defending against Zip/Tar-Slip and Bombs (SEC-02, SEC-03, SEC-04).
+    /// Extract the single target binary from an archive, guarding against path traversal and oversized payloads.
     fn unpack_binary(&self, archive_bytes: &[u8], triple: TargetTriple) -> Result<Vec<u8>> {
         let expected_name = triple.binary_name();
 
@@ -94,7 +94,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
         }
     }
 
-    /// Atomic in-place binary replacement with rollback defense (SEC-06, SEC-07, SEC-08).
+    /// Replace the running executable atomically, falling back on error.
     fn replace_binary(&self, new_binary_bytes: &[u8]) -> Result<()> {
         let current_exe = self.current_exe_path()?;
         let parent = current_exe.parent().ok_or_else(|| {
@@ -104,7 +104,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
             ))
         })?;
 
-        // 1. Same-volume temporary file (SEC-06 Anti-EXDEV)
+        // 1. Create temporary file on the same filesystem to ensure atomic rename
         let temp_new = parent.join(format!(
             ".agyo-new-{}-{}",
             std::process::id(),
@@ -122,7 +122,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
             file.sync_all()?;
         }
 
-        // 3. Unix: set 0o755 executable permissions before replacement (SEC-07)
+        // 3. Unix: set executable permissions before replacement
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -146,7 +146,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
         Ok(())
     }
 
-    /// Startup lazy cleanup of lingering .old backup binary (SEC-09).
+    /// Silently remove lingering .old backup binaries left by previous upgrades.
     fn cleanup_old_binary(&self) -> Result<()> {
         #[cfg(windows)]
         {
@@ -161,7 +161,7 @@ impl BinaryReplacerPort for LocalBinaryReplacer {
     }
 }
 
-/// Unpack the single target binary from a ZIP archive stream (SEC-02, SEC-03, SEC-04).
+/// Extract the single target binary from a ZIP archive stream.
 fn unpack_zip_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>> {
     let cursor = std::io::Cursor::new(archive_bytes);
     let mut zip = zip::ZipArchive::new(cursor)
@@ -172,7 +172,7 @@ fn unpack_zip_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>
             .by_index(i)
             .map_err(|e| OrbitError::Upgrade(format!("ZIP entry read error: {e}")))?;
 
-        // Zip-Slip defense: enclosed_name sanitizes and rejects path traversals (SEC-02, SEC-03)
+        // Reject directory traversals and insecure relative components
         let enclosed = match file.enclosed_name() {
             Some(path) => path,
             None => {
@@ -189,7 +189,7 @@ fn unpack_zip_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>
 
         if enclosed.to_str() == Some(target_binary) && file.is_file() {
             let mut buf = Vec::new();
-            // Probe with +1 byte to strictly prevent truncation or decompression bombs (SEC-04)
+            // Read up to limit + 1 to detect oversized payloads without reading entire bombs
             file.take(MAX_DECOMPRESSED_BINARY_SIZE + 1)
                 .read_to_end(&mut buf)?;
             if buf.len() as u64 > MAX_DECOMPRESSED_BINARY_SIZE {
@@ -207,7 +207,7 @@ fn unpack_zip_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>
     )))
 }
 
-/// Unpack the single target binary from a TAR.GZ archive stream (SEC-02, SEC-03, SEC-04).
+/// Extract the single target binary from a TAR.GZ archive stream.
 fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u8>> {
     let cursor = std::io::Cursor::new(archive_bytes);
     let gz = flate2::read::GzDecoder::new(cursor);
@@ -221,7 +221,7 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
         let entry =
             entry_res.map_err(|e| OrbitError::Upgrade(format!("TAR entry read error: {e}")))?;
 
-        // Tar-Slip defense (SEC-02, SEC-03)
+        // Reject directory traversal in entry paths
         let path = entry
             .path()
             .map_err(|e| OrbitError::SecurityViolation(format!("Invalid TAR entry path: {e}")))?;
@@ -242,7 +242,7 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
             continue;
         }
 
-        // Must be located directly at archive root, allowing optional leading "./" prefix (SEC-02, SEC-03)
+        // Only extract binaries located at archive root (permitting leading './')
         let parent = path.parent();
         if parent != Some(Path::new("")) && parent != Some(Path::new(".")) {
             continue;
@@ -250,7 +250,7 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
 
         if path.file_name().and_then(|s| s.to_str()) == Some(target_binary) {
             let mut buf = Vec::new();
-            // Probe with +1 byte to strictly prevent truncation or decompression bombs (SEC-04)
+            // Read up to limit + 1 to detect oversized payloads
             entry
                 .take(MAX_DECOMPRESSED_BINARY_SIZE + 1)
                 .read_to_end(&mut buf)?;
@@ -269,7 +269,7 @@ fn unpack_targz_entry(archive_bytes: &[u8], target_binary: &str) -> Result<Vec<u
     )))
 }
 
-/// Windows rename-replace with exponential backoff retry and compensating rollback (SEC-08).
+/// Windows in-use binary replacement: rename running executable to .old with retries on lock contention.
 #[cfg(windows)]
 fn replace_windows_with_rollback(current_exe: &Path, temp_new: &Path) -> Result<()> {
     use std::time::Duration;

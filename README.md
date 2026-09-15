@@ -166,9 +166,9 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
 
 ## 🗑️ Uninstallation
 
-`agy-orbit` adheres to strict zero-pollution engineering: no startup entries, no registry manipulation, no background daemons. To cleanly uninstall, follow the graduated cleanup tiers:
+`agy-orbit` creates no startup entries, registry modifications, or background daemons. To uninstall, choose the cleanup scope that fits your needs:
 
-### Tier 1: Remove Binary Only (Upgrade or Pause)
+### Option 1: Remove Binary Only
 
 - **Installed via Cargo**:
   ```bash
@@ -178,7 +178,7 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
   Simply delete the `agyo` (or `agyo.exe`) binary from your `$PATH` directory.
   > 💡 This preserves your encrypted multi-account storage (`~/.agyo/`), allowing seamless reuse after reinstallation.
 
-### Tier 2: Full Physical Teardown (Destroy Data & Locks)
+### Option 2: Full Teardown (Remove Data & Locks)
 
 - **One-click official safe uninstaller (recommended)**:
   ```powershell
@@ -206,7 +206,7 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
     rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
     ```
 
-### Tier 3: Shell Completion Cleanup
+### Clean Up Shell Completion
 
 If you previously configured shell completion, remove the corresponding lines from your shell profile to prevent startup errors:
 - **PowerShell**: Open `$PROFILE` and remove any line referencing `agyo completion` or `.agyo\completion.ps1`.

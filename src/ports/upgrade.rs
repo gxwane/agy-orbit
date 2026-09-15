@@ -16,10 +16,10 @@ pub trait BinaryReplacerPort: Send + Sync {
     /// Path to current executing binary.
     fn current_exe_path(&self) -> Result<PathBuf>;
 
-    /// Check if target directory is writable before downloading (two-stage probe).
+    /// Verify that the target directory is writable before downloading assets.
     fn preflight_permission_check(&self) -> Result<()>;
 
-    /// Unpack the single binary entry from archive safely (strictly preventing Zip/Tar-Slip).
+    /// Unpack the single binary entry from archive, validating paths against traversal.
     fn unpack_binary(&self, archive_bytes: &[u8], triple: TargetTriple) -> Result<Vec<u8>>;
 
     /// Atomically replace the current executing binary with new bytes.

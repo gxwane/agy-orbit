@@ -7,7 +7,7 @@ use tempfile::TempDir;
 static SANDBOX_LOCK: Mutex<()> = Mutex::new(());
 
 /// Hermetic Test Sandbox isolating GEMINI_HOME, AGYO_HOME, AGYO_RUNTIME_DIR, and OS Keyring
-/// using a 100% Safe in-memory path override registry (0 unsafe calls).
+/// using an in-memory path override registry for hermetic testing.
 #[allow(dead_code)]
 pub struct TestSandbox {
     pub dir: TempDir,
@@ -36,7 +36,7 @@ impl TestSandbox {
         let keyring_target = format!("LegacyGeneric:target=test_sandbox_{unique_suffix}");
         let keyring_service = format!("test_sandbox_{unique_suffix}");
 
-        // In-memory thread-safe override registration (Zero unsafe, zero OS environment mutation)
+        // Thread-safe in-memory override registration without mutating environment variables
         paths::set_test_paths(Some(TestPathsOverride {
             gemini_dir: Some(gemini_dir.clone()),
             agyo_dir: Some(agyo_dir.clone()),

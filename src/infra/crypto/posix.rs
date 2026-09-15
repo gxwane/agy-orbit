@@ -16,7 +16,7 @@ const TAG_LEN: usize = 16;
 const MIN_SEALED_LEN: usize = 16 + NONCE_LEN + TAG_LEN; // 44 bytes
 
 /// POSIX cryptographic vault implementing NIST SP 800-38D AES-256-GCM authenticated encryption.
-/// Sealed secrets are hardware/machine-bound using a 3-tier entropy waterfall.
+/// Sealed secrets are bound to host identity and the current user using layered entropy sources.
 #[derive(Clone)]
 pub struct PosixVault {
     master_key: [u8; 32],
@@ -39,9 +39,9 @@ impl PosixVault {
         let mut hasher = Sha256::new();
         hasher.update(b"AGYO_POSIX_VAULT_SALT_2026_V1:");
 
-        // Tier 1: Machine hardware/OS identifier (e.g. Linux /etc/machine-id)
+        // 1. Host machine identifier (Linux /etc/machine-id or dbus)
         #[allow(unused_mut)]
-        let mut has_tier1 = false;
+        let mut has_machine_id = false;
         #[cfg(target_os = "linux")]
         {
             if let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id")
@@ -50,12 +50,12 @@ impl PosixVault {
                 let trimmed = machine_id.trim();
                 if !trimmed.is_empty() && trimmed != "00000000000000000000000000000000" {
                     hasher.update(trimmed.as_bytes());
-                    has_tier1 = true;
+                    has_machine_id = true;
                 }
             }
         }
 
-        // Tier 2: Kernel-level user identity & persistent home directory
+        // 2. User identity & home directory
         #[cfg(unix)]
         {
             let uid = unsafe { libc::getuid() };
@@ -65,9 +65,9 @@ impl PosixVault {
             hasher.update(home.to_string_lossy().as_bytes());
         }
 
-        // Tier 3: Local secure machine seed fallback if Tier 1 machine identifier is missing
-        // (Ensures 100% stable key across macOS, BSD, and minimal Docker containers)
-        if !has_tier1 {
+        // 3. Fallback machine seed if host machine-id is absent
+        // (Ensures stable key derivation across macOS, BSD, and minimal containers)
+        if !has_machine_id {
             let seed = Self::get_or_create_machine_seed();
             hasher.update(seed);
         }

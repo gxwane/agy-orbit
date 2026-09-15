@@ -148,7 +148,7 @@ pub fn validate_keyring_secret_for_sync(secret: &str, oauth_bytes: Option<&[u8]>
     Ok(())
 }
 
-const MAX_JWT_LEN: usize = 16 * 1024; // 16 KB hard ceiling for anti-DoS / memory exhaustion
+const MAX_JWT_LEN: usize = 16 * 1024; // 16 KB safety ceiling to prevent excessive memory allocation
 
 fn b64_val(c: u8) -> Option<u8> {
     match c {

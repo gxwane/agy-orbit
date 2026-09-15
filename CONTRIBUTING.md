@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to `agy-orbit` (`agyo`)!
 
-This project adheres to the **Clean Craftsmanship** principles: all code changes must pass the automated quality checks (`verify_gauntlet.ps1` / `verify_gauntlet.sh`) with 0 warnings.
+All code contributions are expected to pass the automated quality verification suite (`verify_gauntlet.ps1` / `verify_gauntlet.sh`) with zero warnings.
 
 ---
 

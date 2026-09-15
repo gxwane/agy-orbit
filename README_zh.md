@@ -167,9 +167,9 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
 
 ## 🗑️ 卸载指南 (Uninstallation)
 
-`agy-orbit` 遵循纯净工程原则：零开机自启、零系统注册表篡改、零后台守护进程。卸载时提供梯度清理策略与一键官方安全脚本：
+`agy-orbit` 不会注册开机自启、篡改系统注册表或驻留后台守护进程。您可以根据需求选择合适的卸载与清理范围：
 
-### 梯次 1：仅卸载可执行文件（日常升级或暂停使用）
+### 选项 1：仅卸载可执行文件
 
 - **通过 Cargo 安装**：
   ```bash
@@ -179,7 +179,7 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
   直接从系统 `PATH` 目录删除 `agyo`（Windows 为 `agyo.exe`）二进制文件。
   > 💡 此步骤会完整保留您的多账号加密存储（`~/.agyo/`），未来重新安装即可直接复用。
 
-### 梯次 2：完全清理（删除数据与锁目录）
+### 选项 2：完全清理（删除数据与锁目录）
 
 - **一键官方安全脚本（推荐）**：
   ```powershell
@@ -207,7 +207,7 @@ agyo completion fish > ~/.config/fish/completions/agyo.fish
     rm -rf "${TMPDIR:-/tmp}/agyo-run-$(id -u)" 2>/dev/null || true
     ```
 
-### 梯次 3：Shell 自动补全清理提醒
+### 清理 Shell 自动补全配置
 
 若您此前配置过 Shell 补全，请移除配置文件中的对应行，避免新终端启动时报错：
 - **PowerShell**：打开 `$PROFILE`，移除包含 `agyo completion` 或 `.agyo\completion.ps1` 的行；

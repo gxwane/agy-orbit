@@ -31,7 +31,7 @@ echo "       agy-orbit (agyo) Safe Uninstaller       "
 echo "==============================================="
 echo ""
 
-# 1. Guarded safe directory removal function (anti-empty, anti-short, anti-root)
+# 1. Guarded safe directory removal with validation against root and invalid paths
 safe_remove_dir() {
   local target_path="${1:-}"
   local expected_name="${2:-}"

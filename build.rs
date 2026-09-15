@@ -1,5 +1,5 @@
 //! agy-orbit cross-platform build script (build.rs)
-//! Adheres to Gate 2 audit rules: only embed PE resources & asInvoker manifest when target OS is Windows.
+//! Embeds Windows PE version metadata and application manifest on Windows targets.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

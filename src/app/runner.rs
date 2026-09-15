@@ -213,7 +213,7 @@ impl<'a> RunService<'a> {
             }
         };
 
-        // Check 1: Structure & Semantic Validation (Anti-Torn Write)
+        // Validate credential structure and parseability before syncing
         if let Err(e) = validate_keyring_secret_for_sync(&keyring_secret, oauth_bytes.as_deref()) {
             eprintln!(
                 "{} [Two-Way Sync] Warning: invalid keyring secret ({e}). Preserving vault snapshot.",
@@ -243,7 +243,7 @@ impl<'a> RunService<'a> {
             }
         }
 
-        // Check 2: Identity Assertion (Active email must match orbit)
+        // Ensure active account email matches the targeted orbit
         let resolved = resolve_credentials(
             Some(&keyring_secret),
             oauth_bytes.as_deref(),
@@ -268,7 +268,7 @@ impl<'a> RunService<'a> {
             }
         }
 
-        // Check 3: Fingerprint check (Skip if tokens did not change)
+        // Skip update if token fingerprint is unchanged
         let current_fp = compute_target_fingerprint(
             oauth_bytes.as_deref(),
             accounts_bytes.as_deref(),

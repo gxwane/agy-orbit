@@ -50,7 +50,7 @@ impl GitHubReleaseAdapter {
     }
 
     /// Build a secure `ureq::Agent` with strict timeouts and disabled automatic redirects
-    /// so we can manually validate every redirect location (SEC-01).
+    /// so each redirect destination URL can be explicitly validated against allowed hosts.
     fn build_agent() -> ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(5))
@@ -59,7 +59,7 @@ impl GitHubReleaseAdapter {
             .build()
     }
 
-    /// Validate that a URL uses HTTPS and points to an allowed GitHub domain (SEC-01).
+    /// Validate that a URL uses HTTPS and points to an allowed GitHub domain.
     pub fn validate_url(url_str: &str) -> Result<()> {
         if !url_str.starts_with("https://") {
             return Err(OrbitError::SecurityViolation(
@@ -81,7 +81,7 @@ impl GitHubReleaseAdapter {
         Ok(())
     }
 
-    /// Handle potential GitHub API rate limiting errors (SEC-10).
+    /// Map GitHub API rate-limit responses to user-actionable error messages.
     fn handle_rate_limit_response(res: &ureq::Response) -> OrbitError {
         if let Some(reset_val) = res.header("x-ratelimit-reset")
             && let Ok(reset_epoch) = reset_val.parse::<i64>()

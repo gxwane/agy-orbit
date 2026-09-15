@@ -127,19 +127,19 @@ fn verify_or_create_secure_runtime_dir(dir: &std::path::Path) -> Result<()> {
     let current_uid = unsafe { libc::getuid() };
 
     if let Ok(meta) = std::fs::symlink_metadata(dir) {
-        // Assertion 1: Reject symlinks to prevent hijacking
+        // Reject symlinks to prevent path traversal or hijacking
         if meta.file_type().is_symlink() {
             return Err(OrbitError::Vault(format!(
                 "Runtime directory symlink hijack detected at {dir:?}"
             )));
         }
-        // Assertion 2: Must be an actual directory
+        // Target path must be a valid directory
         if !meta.is_dir() {
             return Err(OrbitError::Vault(format!(
                 "Runtime path exists but is not a directory: {dir:?}"
             )));
         }
-        // Assertion 3: Owner must match current process UID
+        // Restrict ownership strictly to the current process UID
         if meta.uid() != current_uid {
             return Err(OrbitError::Vault(format!(
                 "Runtime directory UID mismatch (owner: {}, current: {})",
@@ -147,7 +147,7 @@ fn verify_or_create_secure_runtime_dir(dir: &std::path::Path) -> Result<()> {
                 current_uid
             )));
         }
-        // Assertion 4: Permissions strictly 0700 (no group or others access)
+        // Enforce strict 0700 permissions (disallow group or world access)
         let mode = meta.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
             return Err(OrbitError::Vault(format!(

@@ -83,7 +83,7 @@ fn run_app() -> Result<()> {
         eprintln!("{} Warning during auto-recovery check: {e}", "⚠".yellow());
     }
 
-    // 4. Startup lazy cleanup: silently remove lingering .old backup binary from previous upgrade (SEC-09)
+    // 4. Clean up lingering .old backup binary from previous upgrade if present
     let replacer = LocalBinaryReplacer::new();
     let _ = replacer.cleanup_old_binary();
 
