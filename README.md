@@ -119,6 +119,7 @@ agyo quota --all
 | `agyo quota [orbit]` | `q` | Check live model quota and countdowns (`-a, --all`, `-r, --refresh`) |
 | `agyo remove <orbit>` | `rm` | Safely delete a saved Orbit profile |
 | `agyo completion [shell]` | `comp`| Generate shell completion script (`--raw`, supports bash, zsh, fish, powershell, elvish) |
+| `agyo upgrade` | `update`, `up` | Check for updates and self-upgrade binary in-place (`-c, --check`, `-f, --force`, `-p`) |
 
 ### Detailed Flags & Options
 
@@ -137,6 +138,11 @@ agyo quota --all
 #### `agyo completion [SHELL]`
 - `[SHELL]`: Target shell family (`bash`, `zsh`, `fish`, `powershell`, `elvish`). Auto-detected if omitted in interactive terminals.
 - `--raw`: Output raw completion script without setup instructions.
+
+#### `agyo upgrade`
+- `-c, --check`: Check for updates without downloading or installing.
+- `-f, --force`: Force reinstall or upgrade even if already on the latest version.
+- `-p, --include-prereleases`: Include pre-release versions (Alpha / Beta / RC).
 
 ---
 

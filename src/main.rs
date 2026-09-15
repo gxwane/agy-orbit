@@ -3,7 +3,7 @@ use colored::Colorize;
 
 use agy_orbit::app::{
     QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions, RunService,
-    SnapshotService, SwitchService,
+    SnapshotService, SwitchService, UpgradeOptions, UpgradeService,
 };
 use agy_orbit::cli::{Cli, Commands};
 use agy_orbit::error::Result;
@@ -12,12 +12,13 @@ use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
 use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
-use agy_orbit::ports::StoragePort;
+use agy_orbit::infra::upgrade::{GitHubReleaseAdapter, LocalBinaryReplacer};
+use agy_orbit::ports::{BinaryReplacerPort, StoragePort};
 use agy_orbit::ui::{
     detect_current_shell, emit_completion_script, install_terminal_panic_hook, is_interactive,
     render_completion_guide, render_multi_quota_table, render_orbits_table,
-    render_quota_tip_if_multiple, render_quota_view, render_success, render_whoami,
-    select_orbit_interactive,
+    render_quota_tip_if_multiple, render_quota_view, render_success, render_upgrade_result,
+    render_whoami, select_orbit_interactive,
 };
 use std::io::IsTerminal;
 
@@ -82,7 +83,11 @@ fn run_app() -> Result<()> {
         eprintln!("{} Warning during auto-recovery check: {e}", "⚠".yellow());
     }
 
-    // 4. Dispatch commands to Application Services
+    // 4. Startup lazy cleanup: silently remove lingering .old backup binary from previous upgrade (SEC-09)
+    let replacer = LocalBinaryReplacer::new();
+    let _ = replacer.cleanup_old_binary();
+
+    // 5. Dispatch commands to Application Services
     match cli.command {
         Some(Commands::Save { name, label, force }) => {
             let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
@@ -164,6 +169,22 @@ fn run_app() -> Result<()> {
                 let mut cmd = Cli::command();
                 emit_completion_script(target_shell, &mut cmd, &mut std::io::stdout())?;
             }
+            Ok(())
+        }
+        Some(Commands::Upgrade {
+            check,
+            force,
+            include_prereleases,
+        }) => {
+            let provider = GitHubReleaseAdapter::new();
+            let current_exe = replacer.current_exe_path().ok();
+            let service = UpgradeService::new(&provider, &replacer);
+            let result = service.execute_upgrade(UpgradeOptions {
+                check,
+                force,
+                include_prereleases,
+            })?;
+            render_upgrade_result(&result, current_exe.as_deref());
             Ok(())
         }
         Some(Commands::CompleteOrbits) => {

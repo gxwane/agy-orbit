@@ -126,6 +126,26 @@ pub enum Commands {
         raw: bool,
     },
 
+    /// Check for updates or self-upgrade agyo to the latest release
+    #[command(
+        visible_aliases = ["update", "up"],
+        long_about = "Check for available new versions from GitHub Releases and perform an in-place atomic upgrade.\n\
+                      Strictly verifies SHA-256 integrity and handles OS-level file locking with automatic rollback."
+    )]
+    Upgrade {
+        /// Only check for updates without downloading or installing
+        #[arg(short, long)]
+        check: bool,
+
+        /// Force reinstall or upgrade even if already on the latest version
+        #[arg(short, long)]
+        force: bool,
+
+        /// Include pre-release versions (Alpha / Beta / RC)
+        #[arg(short = 'p', long)]
+        include_prereleases: bool,
+    },
+
     /// Internal fast query for shell completions (outputs orbit names only)
     #[command(hide = true, name = "__complete-orbits")]
     CompleteOrbits,

@@ -58,6 +58,12 @@ pub enum OrbitError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("Upgrade error: {0}")]
+    Upgrade(String),
+
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

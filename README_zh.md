@@ -120,6 +120,7 @@ agyo quota --all
 | `agyo quota [orbit]` | `q` | 查询各模型池配额与重置倒计时（支持 `-a, --all`, `-r, --refresh`） |
 | `agyo remove <orbit>` | `rm` | 安全删除指定轨道及其加密快照 |
 | `agyo completion [shell]` | `comp`| 生成 Shell 自动补全脚本（支持 `--raw`，涵盖 bash, zsh, fish, powershell, elvish） |
+| `agyo upgrade` | `update`, `up` | 检查新版本并原地安全自更新（支持 `-c, --check`, `-f, --force`, `-p`） |
 
 ### 关键参数与选项
 
@@ -138,6 +139,11 @@ agyo quota --all
 #### `agyo completion [SHELL]`
 - `[SHELL]`：目标 Shell 类型（`bash`, `zsh`, `fish`, `powershell`, `elvish`）。在交互终端中省略将自动探测当前环境。
 - `--raw`：仅输出原始补全脚本，不包含配置指引文字。
+
+#### `agyo upgrade`
+- `-c, --check`：仅检查是否有新版本，不执行下载与安装。
+- `-f, --force`：即使当前已是最新版，也强制重新下载并覆盖。
+- `-p, --include-prereleases`：检查并允许更新至先行版本（Alpha / Beta / RC）。
 
 ---
 
