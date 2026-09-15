@@ -3,7 +3,7 @@
 [![CI](https://github.com/gxwane/agy-orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/gxwane/agy-orbit/actions)
 [![Crates.io](https://img.shields.io/crates/v/agy-orbit.svg)](https://crates.io/crates/agy-orbit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](Cargo.toml)
+[![Rust: 1.98+](https://img.shields.io/badge/Rust-1.98%2B-orange.svg)](Cargo.toml)
 
 [English](README.md) | **简体中文**
 
