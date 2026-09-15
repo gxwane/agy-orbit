@@ -6,7 +6,7 @@ use crate::infra::storage::paths::{
     remove_guarded_directory,
 };
 use crate::ports::lease::LeasePort;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Configuration options for uninstalling agy-orbit.
 #[derive(Debug, Clone, Default)]
@@ -191,7 +191,7 @@ impl<'a> UninstallService<'a> {
 }
 
 #[cfg(windows)]
-fn spawn_delayed_windows_cleanup(current_exe: &Path) {
+fn spawn_delayed_windows_cleanup(current_exe: &std::path::Path) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const DETACHED_PROCESS: u32 = 0x00000008;
