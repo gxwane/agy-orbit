@@ -1,8 +1,9 @@
 use crate::domain::credentials::{ResolvedIdentity, resolve_credentials};
-use crate::domain::orbit::OrbitName;
+use crate::domain::orbit::{ActiveState, OrbitName, resolve_active_state};
 use crate::domain::quota::{QuotaBucket, QuotaCacheEntry, QuotaSummary};
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
+use crate::ports::lease::LeasePort;
 use crate::ports::quota::{QuotaCachePort, QuotaPort};
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
@@ -69,6 +70,7 @@ pub struct QuotaService<'a> {
     vault: Option<&'a dyn VaultPort>,
     quota_port: &'a dyn QuotaPort,
     cache_port: &'a dyn QuotaCachePort,
+    lease: Option<&'a dyn LeasePort>,
 }
 
 impl<'a> QuotaService<'a> {
@@ -85,6 +87,7 @@ impl<'a> QuotaService<'a> {
             vault: None,
             quota_port,
             cache_port,
+            lease: None,
         }
     }
 
@@ -95,6 +98,11 @@ impl<'a> QuotaService<'a> {
 
     pub fn with_vault(mut self, vault: &'a dyn VaultPort) -> Self {
         self.vault = Some(vault);
+        self
+    }
+
+    pub fn with_lease(mut self, lease: &'a dyn LeasePort) -> Self {
+        self.lease = Some(lease);
         self
     }
 
@@ -117,6 +125,24 @@ impl<'a> QuotaService<'a> {
 
     fn resolve_target_auth(&self, target_orbit: Option<&str>) -> Result<ResolvedTargetAuth> {
         let index = self.storage.load_index().unwrap_or_default();
+        let live_identity = self.resolve_live_identity().ok();
+        let (active_state, disk_sync) = resolve_active_state(
+            &index,
+            live_identity.as_ref().and_then(|id| id.email.as_deref()),
+        );
+
+        if let Some(new_active) = disk_sync {
+            let can_sync = self.lease.is_none_or(|l| {
+                l.check_active_lease()
+                    .map(|opt| opt.is_none())
+                    .unwrap_or(false)
+            });
+            if can_sync {
+                let mut updated = index.clone();
+                updated.active_orbit = new_active;
+                let _ = self.storage.save_index(&updated);
+            }
+        }
 
         if let Some(name_str) = target_orbit {
             let orbit_name = OrbitName::new(name_str)?;
@@ -125,14 +151,18 @@ impl<'a> QuotaService<'a> {
                 .get(orbit_name.as_str())
                 .ok_or_else(|| OrbitError::OrbitNotFound(orbit_name.to_string()))?;
 
-            let email = Some(record.email.clone());
-            let is_active = index.active_orbit.as_deref() == Some(orbit_name.as_str());
+            let is_currently_active = match &active_state {
+                ActiveState::Managed { name, .. } => name == orbit_name.as_str(),
+                _ => false,
+            };
 
-            if is_active {
-                let live = self.resolve_live_identity()?;
+            if is_currently_active {
+                let live = live_identity.ok_or_else(|| {
+                    OrbitError::CredentialValidation("Active credentials not found.".into())
+                })?;
                 Ok(ResolvedTargetAuth {
                     orbit_name: orbit_name.to_string(),
-                    account_email: email.or(live.email),
+                    account_email: Some(record.email.clone()),
                     access_token: live.access_token,
                 })
             } else {
@@ -160,22 +190,32 @@ impl<'a> QuotaService<'a> {
 
                 Ok(ResolvedTargetAuth {
                     orbit_name: orbit_name.to_string(),
-                    account_email: email.or(id.email),
+                    account_email: Some(record.email.clone()),
                     access_token: id.access_token,
                 })
             }
         } else {
-            let index = self.storage.load_index().unwrap_or_default();
-            let orbit_name = index
-                .active_orbit
-                .clone()
-                .unwrap_or_else(|| "active".to_string());
-            let live = self.resolve_live_identity()?;
-            Ok(ResolvedTargetAuth {
-                orbit_name,
-                account_email: live.email,
-                access_token: live.access_token,
-            })
+            let live = live_identity.ok_or_else(|| {
+                OrbitError::CredentialValidation(
+                    "No valid access token found in OS Keyring or ~/.gemini/oauth_creds.json. Run `agy` to authenticate.".into(),
+                )
+            })?;
+
+            match active_state {
+                ActiveState::Managed { name, email } => Ok(ResolvedTargetAuth {
+                    orbit_name: name,
+                    account_email: Some(email),
+                    access_token: live.access_token,
+                }),
+                ActiveState::Unmanaged { email } => Ok(ResolvedTargetAuth {
+                    orbit_name: "(unmanaged)".to_string(),
+                    account_email: Some(email),
+                    access_token: live.access_token,
+                }),
+                ActiveState::Anonymous => Err(OrbitError::CredentialValidation(
+                    "No active Google account found in Antigravity.".into(),
+                )),
+            }
         }
     }
 
@@ -184,16 +224,31 @@ impl<'a> QuotaService<'a> {
         let orbit_name = auth.orbit_name.clone();
         let account_email = auth.account_email.clone();
 
-        // 1. Check cached quota (TTL: 60 seconds)
-        let cached_entry = self.cache_port.load_quota_cache(&orbit_name).ok().flatten();
-        if !opts.refresh
-            && let Some(ref cache) = cached_entry
-            && cache.is_fresh(60)
-        {
+        let cache_key = if orbit_name == "(unmanaged)" {
+            "_live"
+        } else {
+            &orbit_name
+        };
+
+        // 1. Check cached quota (TTL: 60 seconds) with email verification
+        let cached_entry = self.cache_port.load_quota_cache(cache_key).ok().flatten();
+        let is_valid_cache = if let Some(ref cache) = cached_entry {
+            let email_matches = match (&account_email, &cache.account_email) {
+                (Some(curr), Some(cached)) => curr.eq_ignore_ascii_case(cached),
+                (None, None) => true,
+                _ => false,
+            };
+            email_matches && cache.is_fresh(60)
+        } else {
+            false
+        };
+
+        if !opts.refresh && is_valid_cache {
+            let cache = cached_entry.unwrap();
             return Ok(QuotaViewData {
                 orbit_name,
                 account_email,
-                summary: cache.summary.clone(),
+                summary: cache.summary,
                 is_stale: false,
                 warning: None,
             });
@@ -213,7 +268,7 @@ impl<'a> QuotaService<'a> {
         match fetch_res {
             Ok(summary) => {
                 let entry = QuotaCacheEntry {
-                    orbit_name: orbit_name.clone(),
+                    orbit_name: cache_key.to_string(),
                     account_email: account_email.clone(),
                     cached_at: Utc::now(),
                     summary: summary.clone(),
@@ -267,41 +322,102 @@ impl<'a> QuotaService<'a> {
 
     pub fn query_all_quotas(&self, refresh: bool) -> Result<Vec<MultiQuotaRowData>> {
         let index = self.storage.load_index().unwrap_or_default();
+        let live_identity = self.resolve_live_identity().ok();
+        let (active_state, disk_sync) = resolve_active_state(
+            &index,
+            live_identity.as_ref().and_then(|id| id.email.as_deref()),
+        );
+
+        if let Some(new_active) = disk_sync {
+            let can_sync = self.lease.is_none_or(|l| {
+                l.check_active_lease()
+                    .map(|opt| opt.is_none())
+                    .unwrap_or(false)
+            });
+            if can_sync {
+                let mut updated = index.clone();
+                updated.active_orbit = new_active;
+                let _ = self.storage.save_index(&updated);
+            }
+        }
+
         let mut target_names: Vec<String> = index.orbits.keys().cloned().collect();
         target_names.sort();
 
-        // If no saved orbits, check if active credentials exist
-        if target_names.is_empty() {
-            if let Ok(live) = self.resolve_live_identity() {
-                let view = self.query_quota(QuotaQueryOptions {
-                    orbit: None,
-                    refresh,
-                })?;
-                let metrics = extract_summary_metrics(&view.summary);
-                return Ok(vec![MultiQuotaRowData {
-                    orbit_name: "active".to_string(),
-                    account_email: live.email,
+        // 1. Synthesize unmanaged row if runtime account is unmanaged
+        let unmanaged_row = if let ActiveState::Unmanaged { ref email } = active_state {
+            let res = match self.query_quota(QuotaQueryOptions {
+                orbit: None,
+                refresh,
+            }) {
+                Ok(view_data) => {
+                    let metrics = extract_summary_metrics(&view_data.summary);
+                    MultiQuotaRowData {
+                        orbit_name: "(unmanaged)".to_string(),
+                        account_email: Some(email.clone()),
+                        is_active: true,
+                        gemini_5h_pct: metrics.gemini_5h_pct,
+                        gemini_wk_pct: metrics.gemini_wk_pct,
+                        claude_5h_pct: metrics.claude_5h_pct,
+                        claude_wk_pct: metrics.claude_wk_pct,
+                        status: RowStatus::Active,
+                        next_reset: metrics.next_reset,
+                    }
+                }
+                Err(e) => MultiQuotaRowData {
+                    orbit_name: "(unmanaged)".to_string(),
+                    account_email: Some(email.clone()),
                     is_active: true,
-                    gemini_5h_pct: metrics.gemini_5h_pct,
-                    gemini_wk_pct: metrics.gemini_wk_pct,
-                    claude_5h_pct: metrics.claude_5h_pct,
-                    claude_wk_pct: metrics.claude_wk_pct,
-                    status: RowStatus::Active,
-                    next_reset: metrics.next_reset,
-                }]);
-            }
-            return Ok(vec![]);
+                    gemini_5h_pct: None,
+                    gemini_wk_pct: None,
+                    claude_5h_pct: None,
+                    claude_wk_pct: None,
+                    status: match e {
+                        OrbitError::CredentialValidation(ref msg)
+                            if msg.contains("invalid_grant") || msg.contains("expired") =>
+                        {
+                            RowStatus::AuthExpired(
+                                "Auth expired. Run `agy` to re-login.".to_string(),
+                            )
+                        }
+                        OrbitError::QuotaRateLimited { .. } => {
+                            RowStatus::Error("Rate limited (HTTP 429)".to_string())
+                        }
+                        OrbitError::QuotaHttp(ref msg) => {
+                            RowStatus::Error(format!("Network error: {msg}"))
+                        }
+                        _ => RowStatus::Error(format!("{e}")),
+                    },
+                    next_reset: None,
+                },
+            };
+            Some(res)
+        } else {
+            None
+        };
+
+        // If no saved orbits and no unmanaged active account
+        if target_names.is_empty() {
+            return Ok(unmanaged_row.into_iter().collect());
         }
 
         let chunk_size = 4;
-        let mut rows = Vec::with_capacity(target_names.len());
+        let mut rows = Vec::with_capacity(target_names.len() + 1);
+        if let Some(row) = unmanaged_row {
+            rows.push(row);
+        }
 
         std::thread::scope(|s| {
             for chunk in target_names.chunks(chunk_size) {
                 let mut handles = Vec::with_capacity(chunk.len());
                 for name in chunk {
                     let name = name.clone();
-                    let is_active = index.active_orbit.as_deref() == Some(&name);
+                    let is_active = match &active_state {
+                        ActiveState::Managed {
+                            name: active_name, ..
+                        } => active_name == &name,
+                        _ => false,
+                    };
                     let email = index.orbits.get(&name).map(|r| r.email.clone());
 
                     let handle = s.spawn(move || {
@@ -314,22 +430,31 @@ impl<'a> QuotaService<'a> {
                                     self.cache_port.load_quota_cache(&thread_name)
                                 && cached.is_fresh(60)
                             {
-                                let metrics = extract_summary_metrics(&cached.summary);
-                                return MultiQuotaRowData {
-                                    orbit_name: thread_name.clone(),
-                                    account_email: thread_email.clone().or(cached.account_email),
-                                    is_active,
-                                    gemini_5h_pct: metrics.gemini_5h_pct,
-                                    gemini_wk_pct: metrics.gemini_wk_pct,
-                                    claude_5h_pct: metrics.claude_5h_pct,
-                                    claude_wk_pct: metrics.claude_wk_pct,
-                                    status: if is_active {
-                                        RowStatus::Active
-                                    } else {
-                                        RowStatus::Cached
-                                    },
-                                    next_reset: metrics.next_reset,
+                                let email_matches = match (&thread_email, &cached.account_email) {
+                                    (Some(curr), Some(cached)) => curr.eq_ignore_ascii_case(cached),
+                                    (None, None) => true,
+                                    _ => false,
                                 };
+                                if email_matches {
+                                    let metrics = extract_summary_metrics(&cached.summary);
+                                    return MultiQuotaRowData {
+                                        orbit_name: thread_name.clone(),
+                                        account_email: thread_email
+                                            .clone()
+                                            .or(cached.account_email),
+                                        is_active,
+                                        gemini_5h_pct: metrics.gemini_5h_pct,
+                                        gemini_wk_pct: metrics.gemini_wk_pct,
+                                        claude_5h_pct: metrics.claude_5h_pct,
+                                        claude_wk_pct: metrics.claude_wk_pct,
+                                        status: if is_active {
+                                            RowStatus::Active
+                                        } else {
+                                            RowStatus::Cached
+                                        },
+                                        next_reset: metrics.next_reset,
+                                    };
+                                }
                             }
 
                             // 2. Fetch with row-level fault isolation

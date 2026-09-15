@@ -1,12 +1,14 @@
 use crate::domain::credentials::{extract_active_email, resolve_credentials};
-use crate::domain::orbit::OrbitIndex;
+use crate::domain::orbit::{ActiveState, OrbitIndex, resolve_active_state};
 use crate::error::Result;
 use crate::ports::keyring::KeyringPort;
+use crate::ports::lease::LeasePort;
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhoamiStatus {
+    pub active_state: ActiveState,
     pub active_orbit: Option<String>,
     pub orbit_email: Option<String>,
     pub live_email: Option<String>,
@@ -16,6 +18,7 @@ pub struct QueryService<'a> {
     pub target: &'a dyn TargetPort,
     pub storage: &'a dyn StoragePort,
     pub keyring: Option<&'a dyn KeyringPort>,
+    pub lease: Option<&'a dyn LeasePort>,
 }
 
 impl<'a> QueryService<'a> {
@@ -24,6 +27,7 @@ impl<'a> QueryService<'a> {
             target,
             storage,
             keyring: None,
+            lease: None,
         }
     }
 
@@ -32,11 +36,12 @@ impl<'a> QueryService<'a> {
         self
     }
 
-    /// Retrieve the current active account and active orbit information.
-    /// Prioritizes OS Keyring JWT active identity over stale disk files.
-    pub fn whoami(&self) -> Result<WhoamiStatus> {
-        let index = self.storage.load_index()?;
+    pub fn with_lease(mut self, lease: &'a dyn LeasePort) -> Self {
+        self.lease = Some(lease);
+        self
+    }
 
+    fn resolve_live_email(&self) -> Result<Option<String>> {
         let keyring_secret = self.keyring.and_then(|k| k.get_secret().ok());
         let oauth_bytes = self.target.read_oauth_creds()?.unwrap_or_default();
         let accounts_bytes = self.target.read_google_accounts()?.unwrap_or_default();
@@ -55,21 +60,67 @@ impl<'a> QueryService<'a> {
             }
         });
 
-        let orbit_email = index
-            .active_orbit
-            .as_ref()
-            .and_then(|name| index.orbits.get(name).map(|r| r.email.clone()));
+        Ok(live_email)
+    }
+
+    /// Retrieve the current active account and active orbit information.
+    /// Reconciles the ground-truth live credentials with the storage index.
+    pub fn whoami(&self) -> Result<WhoamiStatus> {
+        let index = self.storage.load_index()?;
+        let live_email = self.resolve_live_email()?;
+
+        let (active_state, disk_sync) = resolve_active_state(&index, live_email.as_deref());
+
+        // Opportunistic auto-sync: only write if no active lease
+        if let Some(new_active) = disk_sync {
+            let can_sync = self.lease.is_none_or(|l| {
+                l.check_active_lease()
+                    .map(|opt| opt.is_none())
+                    .unwrap_or(false)
+            });
+            if can_sync {
+                let mut updated = index.clone();
+                updated.active_orbit = new_active;
+                let _ = self.storage.save_index(&updated);
+            }
+        }
+
+        let active_orbit = active_state.orbit_name().map(|s| s.to_string());
+        let orbit_email = match &active_state {
+            ActiveState::Managed { email, .. } => Some(email.clone()),
+            _ => None,
+        };
 
         Ok(WhoamiStatus {
-            active_orbit: index.active_orbit,
+            active_state,
+            active_orbit,
             orbit_email,
             live_email,
         })
     }
 
-    /// List all registered orbits.
+    /// List all registered orbits with active_orbit reconciled to runtime reality.
     pub fn list(&self) -> Result<OrbitIndex> {
-        self.storage.load_index()
+        let mut index = self.storage.load_index()?;
+        let live_email = self.resolve_live_email()?;
+
+        let (active_state, disk_sync) = resolve_active_state(&index, live_email.as_deref());
+
+        if let Some(new_active) = disk_sync {
+            let can_sync = self.lease.is_none_or(|l| {
+                l.check_active_lease()
+                    .map(|opt| opt.is_none())
+                    .unwrap_or(false)
+            });
+            if can_sync {
+                let mut updated = index.clone();
+                updated.active_orbit = new_active;
+                let _ = self.storage.save_index(&updated);
+            }
+        }
+
+        index.active_orbit = active_state.orbit_name().map(|s| s.to_string());
+        Ok(index)
     }
 }
 
@@ -108,9 +159,30 @@ mod tests {
         let service = QueryService::new(&target, &storage);
         let status = service.whoami().unwrap();
 
-        assert_eq!(status.active_orbit, Some("work".into()));
-        assert_eq!(status.orbit_email, Some("work@company.com".into()));
+        // 1. live@example.com does not match work@company.com -> Unmanaged
+        assert_eq!(status.active_orbit, None);
+        assert_eq!(status.orbit_email, None);
         assert_eq!(status.live_email, Some("live@example.com".into()));
+        assert_eq!(
+            status.active_state,
+            ActiveState::Unmanaged {
+                email: "live@example.com".into()
+            }
+        );
+
+        // 2. When live account matches work@company.com -> Managed
+        target
+            .write_google_accounts(br#"{"active": "work@company.com", "old": []}"#)
+            .unwrap();
+        let status_matching = service.whoami().unwrap();
+        assert_eq!(status_matching.active_orbit, Some("work".into()));
+        assert_eq!(
+            status_matching.active_state,
+            ActiveState::Managed {
+                name: "work".into(),
+                email: "work@company.com".into()
+            }
+        );
     }
 
     #[test]

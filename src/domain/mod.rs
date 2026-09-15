@@ -11,6 +11,8 @@ pub use credentials::{
 };
 pub use journal::{JournalEntry, StoredSnapshot, TransactionPhase};
 pub use lease::LeaseRecord;
-pub use orbit::{OrbitIndex, OrbitMetadata, OrbitName, OrbitRecord};
+pub use orbit::{
+    ActiveState, OrbitIndex, OrbitMetadata, OrbitName, OrbitRecord, resolve_active_state,
+};
 pub use quota::{QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary};
 pub use upgrade::{ReleaseAsset, ReleaseInfo, SemVer, Sha256Verifier, TargetTriple};

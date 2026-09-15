@@ -11,12 +11,20 @@ const BAR_WIDTH: usize = 20;
 /// Render quota information in terminal with adaptive bars, countdown, and warning headers.
 pub fn render_quota_view(data: &QuotaViewData) {
     println!();
-    println!(
-        "{} {} ({})",
-        "Orbit Quota:".bold().cyan(),
-        data.orbit_name.bold(),
-        data.account_email.as_deref().unwrap_or("unknown").cyan()
-    );
+    if data.orbit_name == "(unmanaged)" {
+        println!(
+            "{} {}",
+            "Active Account Quota:".bold().cyan(),
+            data.account_email.as_deref().unwrap_or("unknown").cyan()
+        );
+    } else {
+        println!(
+            "{} {} ({})",
+            "Orbit Quota:".bold().cyan(),
+            data.orbit_name.bold(),
+            data.account_email.as_deref().unwrap_or("unknown").cyan()
+        );
+    }
 
     if let Some(ref warn) = data.warning {
         println!("{} {}", "⚠ Warning:".yellow().bold(), warn.yellow());
@@ -173,24 +181,40 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     println!(
         "{} {}",
         "*".green().bold(),
-        "Indicates currently active Orbit".dimmed()
+        "Indicates currently active account or Orbit".dimmed()
     );
+
+    let has_unmanaged = rows.iter().any(|r| r.orbit_name == "(unmanaged)");
+    if has_unmanaged {
+        println!(
+            "{}",
+            "Tip: Current active account is not managed by any Orbit. Run 'agyo save <name>' to save it."
+                .yellow()
+        );
+    }
 
     // If any row has AuthExpired or Error, show detail warnings below table
     for row in rows {
+        let target_type = if row.orbit_name == "(unmanaged)" {
+            "Account"
+        } else {
+            "Orbit"
+        };
         match &row.status {
             RowStatus::AuthExpired(msg) => {
                 println!(
-                    "{} Orbit '{}': {}",
+                    "{} {} '{}': {}",
                     "⚠ Warning:".yellow().bold(),
+                    target_type,
                     row.orbit_name.bold(),
                     msg.yellow()
                 );
             }
             RowStatus::Error(msg) => {
                 println!(
-                    "{} Orbit '{}': {}",
+                    "{} {} '{}': {}",
                     "⚠ Warning:".yellow().bold(),
+                    target_type,
                     row.orbit_name.bold(),
                     msg.yellow()
                 );

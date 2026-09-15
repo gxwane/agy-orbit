@@ -155,7 +155,7 @@ fn test_quota_service_rate_limit_429_falls_back_to_cache() {
 
     // Seed existing cache
     let entry = QuotaCacheEntry {
-        orbit_name: "active".into(),
+        orbit_name: "_live".into(),
         account_email: Some("dev@example.com".into()),
         cached_at: Utc::now() - Duration::minutes(5),
         summary: sample_quota_summary(),

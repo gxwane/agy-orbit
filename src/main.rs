@@ -112,13 +112,17 @@ fn run_app() -> Result<()> {
             Ok(())
         }
         Some(Commands::List) => {
-            let service = QueryService::new(&target, &storage);
+            let service = QueryService::new(&target, &storage)
+                .with_keyring(&keyring)
+                .with_lease(&lease);
             let index = service.list()?;
             render_orbits_table(&index);
             Ok(())
         }
         Some(Commands::Whoami) => {
-            let service = QueryService::new(&target, &storage).with_keyring(&keyring);
+            let service = QueryService::new(&target, &storage)
+                .with_keyring(&keyring)
+                .with_lease(&lease);
             let status = service.whoami()?;
             render_whoami(&status);
             Ok(())
@@ -143,7 +147,8 @@ fn run_app() -> Result<()> {
             let cache_port = FileQuotaCacheAdapter;
             let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
                 .with_keyring(&keyring)
-                .with_vault(vault.as_ref());
+                .with_vault(vault.as_ref())
+                .with_lease(&lease);
 
             if all {
                 let rows = service.query_all_quotas(refresh)?;
