@@ -99,9 +99,16 @@ main() {
     echo "  ✓ Removed system binary: /usr/local/bin/agyo"
   fi
 
-  if command -v cargo >/dev/null 2>&1; then
+  # Check if installed via Cargo (supports CARGO_INSTALL_ROOT, CARGO_HOME, and default ~/.cargo/bin)
+  local CARGO_BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$TARGET_HOME/.cargo}}/bin"
+  local CARGO_AGYO="${CARGO_BIN_DIR}/agyo"
+  if [[ (-f "$CARGO_AGYO" || -L "$CARGO_AGYO") && $(command -v cargo 2>/dev/null) ]]; then
     if cargo uninstall agy-orbit >/dev/null 2>&1; then
-      echo "  ✓ Uninstalled agy-orbit from Cargo bin."
+      echo "  ✓ Successfully uninstalled agy-orbit via Cargo."
+    elif [[ -f "$CARGO_AGYO" || -L "$CARGO_AGYO" ]]; then
+      # Fallback: remove orphaned binary if not tracked by Cargo metadata
+      rm -f "$CARGO_AGYO"
+      echo "  ✓ Removed orphaned executable from Cargo bin: $CARGO_AGYO"
     fi
   fi
 

@@ -84,11 +84,46 @@ if ((Test-Path -LiteralPath $agyoBinDir) -and (Get-ChildItem -LiteralPath $agyoB
     Remove-Item -LiteralPath $agyoBinDir -Force -ErrorAction SilentlyContinue
 }
 
-# Check if installed via Cargo
-if (Get-Command cargo -ErrorAction SilentlyContinue) {
-    $uninstallResult = & cargo uninstall agy-orbit 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Successfully uninstalled agy-orbit via Cargo." -ForegroundColor Green
+# Check if installed via Cargo (supports CARGO_INSTALL_ROOT, CARGO_HOME, and default ~/.cargo/bin)
+$cargoBinDir = if (-not [string]::IsNullOrWhiteSpace($env:CARGO_INSTALL_ROOT)) {
+    Join-Path $env:CARGO_INSTALL_ROOT "bin"
+} elseif (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+    Join-Path $env:CARGO_HOME "bin"
+} elseif (-not [string]::IsNullOrWhiteSpace($userHome)) {
+    Join-Path $userHome ".cargo\bin"
+} else {
+    $null
+}
+
+if ($cargoBinDir) {
+    $cargoAgyoExe = Join-Path $cargoBinDir "agyo.exe"
+    if ((Test-Path -LiteralPath $cargoAgyoExe) -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        # Isolate ErrorActionPreference to prevent PowerShell 5.1 RemoteException / NativeCommandError
+        # triggered by Cargo writing status/warnings to stderr even on successful operations
+        $prevEAP = $ErrorActionPreference
+        $cargoSucceeded = $false
+        try {
+            $ErrorActionPreference = 'SilentlyContinue'
+            $null = & cargo uninstall agy-orbit 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $cargoSucceeded = $true
+            }
+        } catch {
+            # Suppress any terminating error from native command stderr redirection
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+
+        if ($cargoSucceeded) {
+            Write-Host "  ✓ Successfully uninstalled agy-orbit via Cargo." -ForegroundColor Green
+        } elseif (Test-Path -LiteralPath $cargoAgyoExe) {
+            # Fallback: if cargo uninstall failed (not tracked in Cargo metadata), purge orphaned binary directly
+            Write-Host "  [i] Cargo package 'agy-orbit' not registered; removing orphaned binary: $cargoAgyoExe" -ForegroundColor Gray
+            Remove-Item -LiteralPath $cargoAgyoExe -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $cargoAgyoExe)) {
+                Write-Host "  ✓ Removed orphaned executable from Cargo bin: $cargoAgyoExe" -ForegroundColor Green
+            }
+        }
     }
 }
 
