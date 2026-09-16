@@ -169,6 +169,18 @@ pub enum Commands {
         delete_self: bool,
     },
 
+    /// Check system, credential targets, keyring, network, and vault health
+    #[command(
+        visible_aliases = ["doc", "dr"],
+        long_about = "Perform an automated, zero-mutation health diagnostic of system environment, \
+                      ~/.gemini/ credentials, OS Keyring, network/proxy reachability, and Orbit vault storage."
+    )]
+    Doctor {
+        /// Skip external network connectivity probes and run in offline mode
+        #[arg(long)]
+        offline: bool,
+    },
+
     /// Internal fast query for shell completions (outputs orbit names only)
     #[command(hide = true, name = "__complete-orbits")]
     CompleteOrbits,

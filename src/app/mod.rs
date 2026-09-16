@@ -1,3 +1,4 @@
+pub mod doctor;
 pub mod query;
 pub mod quota;
 pub mod recovery;
@@ -7,6 +8,7 @@ pub mod switch;
 pub mod uninstall;
 pub mod upgrade;
 
+pub use doctor::DoctorService;
 pub use query::{QueryService, WhoamiStatus};
 pub use quota::{
     MultiQuotaRowData, QuotaQueryOptions, QuotaService, QuotaViewData, RowStatus, StaleReason,

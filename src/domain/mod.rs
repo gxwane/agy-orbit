@@ -1,4 +1,5 @@
 pub mod credentials;
+pub mod doctor;
 pub mod journal;
 pub mod lease;
 pub mod orbit;
@@ -9,6 +10,7 @@ pub use credentials::{
     CredentialSnapshot, GoogleAccounts, OAuthCreds, compute_target_fingerprint,
     extract_active_email,
 };
+pub use doctor::{CheckStatus, DiagnosticItem, DiagnosticSection, DoctorReport};
 pub use journal::{JournalEntry, StoredSnapshot, TransactionPhase};
 pub use lease::LeaseRecord;
 pub use orbit::{

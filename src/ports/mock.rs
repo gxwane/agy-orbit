@@ -6,6 +6,7 @@ use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
 use crate::ports::lease::{LeaseGuard, LeasePort};
 use crate::ports::oauth::{RefreshedToken, TokenRefreshPort};
+use crate::ports::probe::{EndpointProbeResult, NetworkProbePort, ProxyConfig};
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 use crate::ports::vault::VaultPort;
@@ -276,5 +277,64 @@ impl TokenRefreshPort for MockTokenRefresh {
             refresh_token: None,
             id_token: None,
         })
+    }
+}
+
+/// Mock Network Probe for in-memory testing.
+#[derive(Default, Clone)]
+pub struct MockNetworkProbe {
+    pub proxy_config: Arc<Mutex<ProxyConfig>>,
+    pub endpoint_results: Arc<Mutex<BTreeMap<String, EndpointProbeResult>>>,
+    pub default_reachable: Arc<Mutex<bool>>,
+}
+
+impl MockNetworkProbe {
+    pub fn new() -> Self {
+        Self {
+            proxy_config: Arc::new(Mutex::new(ProxyConfig::default())),
+            endpoint_results: Arc::new(Mutex::new(BTreeMap::new())),
+            default_reachable: Arc::new(Mutex::new(true)),
+        }
+    }
+
+    pub fn with_proxy(self, proxy: ProxyConfig) -> Self {
+        *self.proxy_config.lock().unwrap() = proxy;
+        self
+    }
+
+    pub fn with_endpoint_result(self, url: impl Into<String>, result: EndpointProbeResult) -> Self {
+        self.endpoint_results
+            .lock()
+            .unwrap()
+            .insert(url.into(), result);
+        self
+    }
+
+    pub fn set_all_unreachable(&self) {
+        *self.default_reachable.lock().unwrap() = false;
+    }
+}
+
+impl NetworkProbePort for MockNetworkProbe {
+    fn get_proxy_config(&self) -> ProxyConfig {
+        self.proxy_config.lock().unwrap().clone()
+    }
+
+    fn probe_endpoint(&self, url: &str, _timeout_ms: u64) -> EndpointProbeResult {
+        if let Some(res) = self.endpoint_results.lock().unwrap().get(url) {
+            return res.clone();
+        }
+        let reachable = *self.default_reachable.lock().unwrap();
+        EndpointProbeResult {
+            endpoint: url.to_string(),
+            reachable,
+            latency_ms: if reachable { Some(20) } else { None },
+            http_status: if reachable { Some(200) } else { None },
+            error: if reachable {
+                None
+            } else {
+                Some("Connection refused (mock)".into())
+            },
+        }
     }
 }

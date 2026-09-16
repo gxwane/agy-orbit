@@ -2,8 +2,8 @@ use clap::{CommandFactory, Parser};
 use colored::Colorize;
 
 use agy_orbit::app::{
-    QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions, RunService,
-    SnapshotService, SwitchService, UninstallOptions, UninstallService, UpgradeOptions,
+    DoctorService, QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions,
+    RunService, SnapshotService, SwitchService, UninstallOptions, UninstallService, UpgradeOptions,
     UpgradeService,
 };
 use agy_orbit::cli::{Cli, Commands};
@@ -12,15 +12,17 @@ use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::oauth::GoogleOAuthAdapter;
+use agy_orbit::infra::probe::UreqProbeAdapter;
 use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
 use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
 use agy_orbit::infra::upgrade::{GitHubReleaseAdapter, LocalBinaryReplacer};
-use agy_orbit::ports::{BinaryReplacerPort, StoragePort};
+use agy_orbit::ports::{BinaryReplacerPort, NetworkProbePort, StoragePort};
 use agy_orbit::ui::{
     detect_current_shell, emit_completion_script, init_terminal_colors,
-    install_terminal_panic_hook, is_interactive, render_completion_guide, render_multi_quota_table,
-    render_orbits_table, render_quota_tip_if_multiple, render_quota_view, render_success,
-    render_uninstall_result, render_upgrade_result, render_whoami, select_orbit_interactive,
+    install_terminal_panic_hook, is_interactive, render_completion_guide, render_doctor_report,
+    render_multi_quota_table, render_orbits_table, render_quota_tip_if_multiple, render_quota_view,
+    render_success, render_uninstall_result, render_upgrade_result, render_whoami,
+    select_orbit_interactive,
 };
 use std::io::IsTerminal;
 
@@ -70,8 +72,12 @@ fn run_app() -> Result<()> {
         }
     }
 
+    let is_doctor = matches!(&cli.command, Some(Commands::Doctor { .. }));
+
     // 1. Storage migration check: smoothly migrate legacy ~/.gemini/profiles to ~/.agyo/
-    let _ = MigrationService::auto_migrate_if_needed();
+    if !is_doctor {
+        let _ = MigrationService::auto_migrate_if_needed();
+    }
 
     // 2. Instantiate infrastructure adapters
     let target = TargetAdapter;
@@ -79,16 +85,18 @@ fn run_app() -> Result<()> {
     let vault = create_default_vault();
     let storage = FileStorage;
     let lease = KernelFileLock;
-
-    // 3. Startup auto-recovery: check for uncommitted WAL transactions and heal
-    let recovery = RecoveryService::new(&target, &keyring, vault.as_ref(), &storage);
-    if let Err(e) = recovery.auto_heal_if_needed() {
-        eprintln!("{} Warning during auto-recovery check: {e}", "⚠".yellow());
-    }
-
-    // 4. Clean up lingering .old backup binary from previous upgrade if present
     let replacer = LocalBinaryReplacer::new();
-    let _ = replacer.cleanup_old_binary();
+
+    if !is_doctor {
+        // 3. Startup auto-recovery: check for uncommitted WAL transactions and heal
+        let recovery = RecoveryService::new(&target, &keyring, vault.as_ref(), &storage);
+        if let Err(e) = recovery.auto_heal_if_needed() {
+            eprintln!("{} Warning during auto-recovery check: {e}", "⚠".yellow());
+        }
+
+        // 4. Clean up lingering .old backup binary from previous upgrade if present
+        let _ = replacer.cleanup_old_binary();
+    }
 
     // 5. Dispatch commands to Application Services
     match cli.command {
@@ -262,6 +270,21 @@ fn run_app() -> Result<()> {
                 delete_self,
             })?;
             render_uninstall_result(&result);
+            Ok(())
+        }
+        Some(Commands::Doctor { offline }) => {
+            let probe_adapter = if offline {
+                None
+            } else {
+                Some(UreqProbeAdapter::new())
+            };
+            let probe_ref = probe_adapter.as_ref().map(|p| p as &dyn NetworkProbePort);
+            let service = DoctorService::new(&target, &keyring, &storage, probe_ref);
+            let report = service.diagnose()?;
+            render_doctor_report(&report);
+            if !report.overall_healthy {
+                std::process::exit(1);
+            }
             Ok(())
         }
         Some(Commands::CompleteOrbits) => {
