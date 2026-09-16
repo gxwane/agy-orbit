@@ -132,8 +132,17 @@ impl KeyringPort for OsKeyring {
     }
 
     fn set_secret(&self, secret: &str) -> Result<()> {
+        let raw_bytes = secret.as_bytes();
+        #[cfg(target_os = "windows")]
+        if raw_bytes.len() > 2560 {
+            return Err(OrbitError::Keyring(format!(
+                "Credential payload size ({} bytes) exceeds Windows Credential Manager physical limit (2560 bytes).",
+                raw_bytes.len()
+            )));
+        }
+
         let entry = self.get_entry()?;
-        match entry.set_password(secret) {
+        match entry.set_secret(raw_bytes) {
             Ok(_) => Ok(()),
             Err(keyring::Error::NoStorageAccess(e)) | Err(keyring::Error::PlatformFailure(e)) => {
                 eprintln!(
@@ -211,5 +220,18 @@ mod tests {
     fn test_decode_secret_bytes_all_nulls() {
         let raw = b"\0\0\0\0";
         assert_eq!(decode_secret_bytes(raw).unwrap(), "");
+    }
+
+    #[test]
+    fn test_decode_large_utf8_payload_roundtrip() {
+        let large_payload = format!(
+            r#"{{"auth_method":"consumer","id_token":"{}","token":{{"access_token":"{}","token_type":"Bearer","refresh_token":"{}"}}}}"#,
+            "a".repeat(1200),
+            "b".repeat(200),
+            "c".repeat(100)
+        );
+        assert!(large_payload.len() > 1500 && large_payload.len() <= 2560);
+        let decoded = decode_secret_bytes(large_payload.as_bytes()).unwrap();
+        assert_eq!(decoded, large_payload);
     }
 }
