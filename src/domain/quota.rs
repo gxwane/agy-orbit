@@ -65,15 +65,50 @@ impl QuotaBucket {
         }
     }
 
+    /// Check whether the bucket is explicitly marked as disabled by Google policy.
+    pub fn is_disabled(&self) -> bool {
+        self.disabled == Some(true)
+    }
+
     /// Return the remaining percentage (0.0% to 100.0%).
+    /// If marked disabled, available quota is strictly 0.0% regardless of remaining_fraction.
     pub fn remaining_percentage(&self) -> f64 {
-        if let Some(frac) = self.remaining_fraction {
-            (frac * 100.0).clamp(0.0, 100.0)
-        } else if self.disabled == Some(true) {
+        if self.is_disabled() {
             0.0
+        } else if let Some(frac) = self.remaining_fraction {
+            (frac * 100.0).clamp(0.0, 100.0)
         } else {
             100.0
         }
+    }
+
+    /// Return the domain-level metric state representing available percentage or policy disabled.
+    pub fn metric_state(&self) -> MetricState {
+        if self.is_disabled() {
+            MetricState::Disabled
+        } else {
+            MetricState::Available(self.remaining_percentage())
+        }
+    }
+}
+
+/// Domain-level state for a quota metric cell in summaries and tables.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum MetricState {
+    Available(f64),
+    Disabled,
+}
+
+impl MetricState {
+    pub fn percentage(&self) -> f64 {
+        match self {
+            MetricState::Available(pct) => *pct,
+            MetricState::Disabled => 0.0,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, MetricState::Disabled)
     }
 }
 
@@ -158,5 +193,23 @@ mod tests {
             summary.groups[0].buckets[0].effective_name(),
             "Gemini 2.5 Pro"
         );
+    }
+
+    #[test]
+    fn test_quota_bucket_disabled_takes_precedence() {
+        let json = r#"{
+            "bucketId": "gemini-5h",
+            "displayName": "Five Hour Limit Remaining",
+            "remainingFraction": 1.0,
+            "disabled": true,
+            "resetTime": "2026-09-16T07:33:42Z"
+        }"#;
+
+        let bucket: QuotaBucket = serde_json::from_str(json).unwrap();
+        assert!(bucket.is_disabled());
+        assert_eq!(bucket.remaining_percentage(), 0.0);
+        assert_eq!(bucket.metric_state(), MetricState::Disabled);
+        assert_eq!(bucket.metric_state().percentage(), 0.0);
+        assert!(bucket.metric_state().is_disabled());
     }
 }

@@ -1,6 +1,6 @@
 use crate::domain::credentials::{ResolvedIdentity, resolve_credentials};
 use crate::domain::orbit::{ActiveState, OrbitName, resolve_active_state};
-use crate::domain::quota::{QuotaBucket, QuotaCacheEntry, QuotaSummary};
+use crate::domain::quota::{MetricState, QuotaBucket, QuotaCacheEntry, QuotaSummary};
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
 use crate::ports::lease::LeasePort;
@@ -27,10 +27,10 @@ pub struct QuotaViewData {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowStatus {
-    Active,
-    Fresh,
-    Cached,
-    Refreshed,
+    Ready,
+    Throttled,
+    Exhausted,
+    TokenStale(String),
     AuthExpired(String),
     Error(String),
 }
@@ -40,20 +40,21 @@ pub struct MultiQuotaRowData {
     pub orbit_name: String,
     pub account_email: Option<String>,
     pub is_active: bool,
-    pub gemini_5h_pct: Option<f64>,
-    pub gemini_wk_pct: Option<f64>,
-    pub claude_5h_pct: Option<f64>,
-    pub claude_wk_pct: Option<f64>,
+    pub is_stale: bool,
+    pub gemini_5h_pct: Option<MetricState>,
+    pub gemini_wk_pct: Option<MetricState>,
+    pub claude_5h_pct: Option<MetricState>,
+    pub claude_wk_pct: Option<MetricState>,
     pub status: RowStatus,
     pub next_reset: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SummaryMetrics {
-    pub gemini_5h_pct: Option<f64>,
-    pub gemini_wk_pct: Option<f64>,
-    pub claude_5h_pct: Option<f64>,
-    pub claude_wk_pct: Option<f64>,
+    pub gemini_5h_pct: Option<MetricState>,
+    pub gemini_wk_pct: Option<MetricState>,
+    pub claude_5h_pct: Option<MetricState>,
+    pub claude_wk_pct: Option<MetricState>,
     pub next_reset: Option<DateTime<Utc>>,
 }
 
@@ -352,15 +353,17 @@ impl<'a> QuotaService<'a> {
             }) {
                 Ok(view_data) => {
                     let metrics = extract_summary_metrics(&view_data.summary);
+                    let health = determine_account_health(&metrics);
                     MultiQuotaRowData {
                         orbit_name: "(unmanaged)".to_string(),
                         account_email: Some(email.clone()),
                         is_active: true,
+                        is_stale: view_data.is_stale,
                         gemini_5h_pct: metrics.gemini_5h_pct,
                         gemini_wk_pct: metrics.gemini_wk_pct,
                         claude_5h_pct: metrics.claude_5h_pct,
                         claude_wk_pct: metrics.claude_wk_pct,
-                        status: RowStatus::Active,
+                        status: health,
                         next_reset: metrics.next_reset,
                     }
                 }
@@ -368,16 +371,20 @@ impl<'a> QuotaService<'a> {
                     orbit_name: "(unmanaged)".to_string(),
                     account_email: Some(email.clone()),
                     is_active: true,
+                    is_stale: false,
                     gemini_5h_pct: None,
                     gemini_wk_pct: None,
                     claude_5h_pct: None,
                     claude_wk_pct: None,
                     status: match e {
                         OrbitError::CredentialValidation(ref msg)
-                            if msg.contains("invalid_grant") || msg.contains("expired") =>
+                            if msg.contains("invalid_grant")
+                                || msg.contains("expired")
+                                || msg.contains("HTTP 401")
+                                || msg.contains("unauthorized") =>
                         {
                             RowStatus::AuthExpired(
-                                "Auth expired. Run `agy` to re-login.".to_string(),
+                                "Active account auth expired. Run `agy` to re-login.".to_string(),
                             )
                         }
                         OrbitError::QuotaRateLimited { .. } => {
@@ -437,21 +444,19 @@ impl<'a> QuotaService<'a> {
                                 };
                                 if email_matches {
                                     let metrics = extract_summary_metrics(&cached.summary);
+                                    let health = determine_account_health(&metrics);
                                     return MultiQuotaRowData {
                                         orbit_name: thread_name.clone(),
                                         account_email: thread_email
                                             .clone()
                                             .or(cached.account_email),
                                         is_active,
+                                        is_stale: false,
                                         gemini_5h_pct: metrics.gemini_5h_pct,
                                         gemini_wk_pct: metrics.gemini_wk_pct,
                                         claude_5h_pct: metrics.claude_5h_pct,
                                         claude_wk_pct: metrics.claude_wk_pct,
-                                        status: if is_active {
-                                            RowStatus::Active
-                                        } else {
-                                            RowStatus::Cached
-                                        },
+                                        status: health,
                                         next_reset: metrics.next_reset,
                                     };
                                 }
@@ -464,24 +469,19 @@ impl<'a> QuotaService<'a> {
                             }) {
                                 Ok(view_data) => {
                                     let metrics = extract_summary_metrics(&view_data.summary);
-                                    let status = if is_active {
-                                        RowStatus::Active
-                                    } else if view_data.is_stale {
-                                        RowStatus::Cached
-                                    } else {
-                                        RowStatus::Fresh
-                                    };
+                                    let health = determine_account_health(&metrics);
                                     MultiQuotaRowData {
                                         orbit_name: thread_name.clone(),
                                         account_email: view_data
                                             .account_email
                                             .or(thread_email.clone()),
                                         is_active,
+                                        is_stale: view_data.is_stale,
                                         gemini_5h_pct: metrics.gemini_5h_pct,
                                         gemini_wk_pct: metrics.gemini_wk_pct,
                                         claude_5h_pct: metrics.claude_5h_pct,
                                         claude_wk_pct: metrics.claude_wk_pct,
-                                        status,
+                                        status: health,
                                         next_reset: metrics.next_reset,
                                     }
                                 }
@@ -489,11 +489,19 @@ impl<'a> QuotaService<'a> {
                                     let status = match e {
                                         OrbitError::CredentialValidation(ref msg)
                                             if msg.contains("invalid_grant")
-                                                || msg.contains("expired") =>
+                                                || msg.contains("expired")
+                                                || msg.contains("HTTP 401")
+                                                || msg.contains("unauthorized") =>
                                         {
-                                            RowStatus::AuthExpired(
-                                                "Auth expired. Run `agy` to re-login.".to_string(),
-                                            )
+                                            if is_active {
+                                                RowStatus::AuthExpired(
+                                                    "Active account auth expired. Run `agy` to re-login.".to_string(),
+                                                )
+                                            } else {
+                                                RowStatus::TokenStale(
+                                                    format!("Cached access token expired. Run `agyo use {}` (auto-refreshes on launch).", thread_name),
+                                                )
+                                            }
                                         }
                                         OrbitError::QuotaRateLimited { .. } => {
                                             RowStatus::Error("Rate limited (HTTP 429)".to_string())
@@ -507,6 +515,7 @@ impl<'a> QuotaService<'a> {
                                         orbit_name: thread_name,
                                         account_email: thread_email,
                                         is_active,
+                                        is_stale: false,
                                         gemini_5h_pct: None,
                                         gemini_wk_pct: None,
                                         claude_5h_pct: None,
@@ -524,6 +533,7 @@ impl<'a> QuotaService<'a> {
                                 orbit_name: name,
                                 account_email: email,
                                 is_active,
+                                is_stale: false,
                                 gemini_5h_pct: None,
                                 gemini_wk_pct: None,
                                 claude_5h_pct: None,
@@ -555,22 +565,64 @@ impl<'a> QuotaService<'a> {
     }
 }
 
-/// Extract standard metric percentages (Gemini 5h, Gemini Wk, Claude 5h, Claude Wk, Earliest Reset)
+/// Merge two metric states using pessimistic monoid:
+/// Disabled takes precedence; if both are Available, the lower percentage is chosen.
+pub fn merge_metric(current: Option<MetricState>, incoming: MetricState) -> Option<MetricState> {
+    match current {
+        None => Some(incoming),
+        Some(MetricState::Disabled) => Some(MetricState::Disabled),
+        Some(MetricState::Available(_)) if incoming == MetricState::Disabled => {
+            Some(MetricState::Disabled)
+        }
+        Some(MetricState::Available(curr_pct)) => match incoming {
+            MetricState::Available(new_pct) => Some(MetricState::Available(curr_pct.min(new_pct))),
+            MetricState::Disabled => Some(MetricState::Disabled),
+        },
+    }
+}
+
+/// Determine high-level account health based on extracted metrics.
+pub fn determine_account_health(metrics: &SummaryMetrics) -> RowStatus {
+    let all_metrics = [
+        metrics.gemini_5h_pct,
+        metrics.gemini_wk_pct,
+        metrics.claude_5h_pct,
+        metrics.claude_wk_pct,
+    ];
+    let known_metrics: Vec<MetricState> = all_metrics.into_iter().flatten().collect();
+    if known_metrics.is_empty() {
+        return RowStatus::Ready;
+    }
+
+    let all_depleted = known_metrics.iter().all(|m| match m {
+        MetricState::Disabled => true,
+        MetricState::Available(pct) => *pct <= 0.0,
+    });
+
+    if all_depleted {
+        return RowStatus::Exhausted;
+    }
+
+    let any_low_or_disabled = known_metrics.iter().any(|m| match m {
+        MetricState::Disabled => true,
+        MetricState::Available(pct) => *pct <= 20.0,
+    });
+
+    if any_low_or_disabled {
+        RowStatus::Throttled
+    } else {
+        RowStatus::Ready
+    }
+}
+
+/// Extract standard metric states and calculate smart unblocking next reset.
 pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
     let mut metrics = SummaryMetrics::default();
 
     let mut check_bucket = |group_name: &str, bucket: &QuotaBucket| {
         let name_lower = format!("{} {}", group_name, bucket.effective_name()).to_lowercase();
         let win_lower = bucket.window.as_deref().unwrap_or("").to_lowercase();
-        let pct = bucket.remaining_percentage();
-
-        if let Some(reset) = bucket.reset_time {
-            match metrics.next_reset {
-                Some(curr) if reset < curr => metrics.next_reset = Some(reset),
-                None => metrics.next_reset = Some(reset),
-                _ => {}
-            }
-        }
+        let state = bucket.metric_state();
 
         let is_gemini = name_lower.contains("gemini");
         let is_claude = name_lower.contains("claude") || name_lower.contains("gpt");
@@ -580,9 +632,9 @@ pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
                 || name_lower.contains("5 hour")
                 || name_lower.contains("five hour")
             {
-                metrics.gemini_5h_pct = Some(pct);
+                metrics.gemini_5h_pct = merge_metric(metrics.gemini_5h_pct, state);
             } else if win_lower.contains("week") || name_lower.contains("week") {
-                metrics.gemini_wk_pct = Some(pct);
+                metrics.gemini_wk_pct = merge_metric(metrics.gemini_wk_pct, state);
             }
         }
         if is_claude {
@@ -590,9 +642,9 @@ pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
                 || name_lower.contains("5 hour")
                 || name_lower.contains("five hour")
             {
-                metrics.claude_5h_pct = Some(pct);
+                metrics.claude_5h_pct = merge_metric(metrics.claude_5h_pct, state);
             } else if win_lower.contains("week") || name_lower.contains("week") {
-                metrics.claude_wk_pct = Some(pct);
+                metrics.claude_wk_pct = merge_metric(metrics.claude_wk_pct, state);
             }
         }
     };
@@ -608,5 +660,204 @@ pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
         check_bucket("", bucket);
     }
 
+    // Smart Next Reset Calculation
+    // Universal Invariant 0: Hard filter out any disabled buckets
+    let mut all_non_disabled_buckets = Vec::new();
+    for group in &summary.groups {
+        for bucket in &group.buckets {
+            if !bucket.is_disabled() {
+                all_non_disabled_buckets.push(bucket);
+            }
+        }
+    }
+    for bucket in &summary.buckets {
+        if !bucket.is_disabled() {
+            all_non_disabled_buckets.push(bucket);
+        }
+    }
+
+    // Full capacity degeneracy: if all non-disabled buckets are full (>= 99.9%), next_reset is None.
+    let all_full = !all_non_disabled_buckets.is_empty()
+        && all_non_disabled_buckets
+            .iter()
+            .all(|b| b.remaining_percentage() >= 99.9);
+
+    if all_full {
+        metrics.next_reset = None;
+    } else {
+        // Collect candidate reset times from non-disabled consumed buckets (< 99.9%)
+        let consumed_resets: Vec<DateTime<Utc>> = all_non_disabled_buckets
+            .iter()
+            .filter(|b| b.remaining_percentage() < 99.9)
+            .filter_map(|b| b.reset_time)
+            .collect();
+
+        if let Some(&min_reset) = consumed_resets.iter().min() {
+            metrics.next_reset = Some(min_reset);
+        } else {
+            // Fallback: earliest reset time of any non-disabled bucket
+            metrics.next_reset = all_non_disabled_buckets
+                .iter()
+                .filter_map(|b| b.reset_time)
+                .min();
+        }
+    }
+
     metrics
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::quota::QuotaGroup;
+    use chrono::Duration;
+
+    #[test]
+    fn test_merge_metric_pessimistic() {
+        assert_eq!(
+            merge_metric(None, MetricState::Available(80.0)),
+            Some(MetricState::Available(80.0))
+        );
+        assert_eq!(
+            merge_metric(Some(MetricState::Available(80.0)), MetricState::Disabled),
+            Some(MetricState::Disabled)
+        );
+        assert_eq!(
+            merge_metric(Some(MetricState::Disabled), MetricState::Available(80.0)),
+            Some(MetricState::Disabled)
+        );
+        assert_eq!(
+            merge_metric(
+                Some(MetricState::Available(80.0)),
+                MetricState::Available(40.0)
+            ),
+            Some(MetricState::Available(40.0))
+        );
+    }
+
+    #[test]
+    fn test_determine_account_health() {
+        let mut m = SummaryMetrics::default();
+        assert_eq!(determine_account_health(&m), RowStatus::Ready);
+
+        m.gemini_5h_pct = Some(MetricState::Available(80.0));
+        m.gemini_wk_pct = Some(MetricState::Available(60.0));
+        assert_eq!(determine_account_health(&m), RowStatus::Ready);
+
+        m.gemini_5h_pct = Some(MetricState::Available(10.0));
+        assert_eq!(determine_account_health(&m), RowStatus::Throttled);
+
+        m.gemini_5h_pct = Some(MetricState::Disabled);
+        m.gemini_wk_pct = Some(MetricState::Available(0.0));
+        assert_eq!(determine_account_health(&m), RowStatus::Exhausted);
+    }
+
+    #[test]
+    fn test_extract_summary_metrics_mc_exhausted_scenario() {
+        let now = Utc::now();
+        let reset_5h = now + Duration::hours(5);
+        let reset_wk = now + Duration::days(4);
+
+        let summary = QuotaSummary {
+            groups: vec![
+                QuotaGroup {
+                    display_name: Some("Gemini Models".into()),
+                    description: None,
+                    buckets: vec![
+                        QuotaBucket {
+                            bucket_id: "gemini-weekly".into(),
+                            display_name: Some("Weekly Limit Remaining".into()),
+                            description: None,
+                            window: Some("weekly".into()),
+                            remaining_fraction: Some(0.0),
+                            remaining_amount: None,
+                            disabled: None,
+                            reset_time: Some(reset_wk),
+                            extra: Default::default(),
+                        },
+                        QuotaBucket {
+                            bucket_id: "gemini-5h".into(),
+                            display_name: Some("Five Hour Limit Remaining".into()),
+                            description: None,
+                            window: Some("5h".into()),
+                            remaining_fraction: Some(1.0),
+                            remaining_amount: None,
+                            disabled: Some(true),
+                            reset_time: Some(reset_5h),
+                            extra: Default::default(),
+                        },
+                    ],
+                },
+                QuotaGroup {
+                    display_name: Some("Claude and GPT models".into()),
+                    description: None,
+                    buckets: vec![
+                        QuotaBucket {
+                            bucket_id: "3p-weekly".into(),
+                            display_name: Some("Weekly Limit Remaining".into()),
+                            description: None,
+                            window: Some("weekly".into()),
+                            remaining_fraction: Some(0.0),
+                            remaining_amount: None,
+                            disabled: None,
+                            reset_time: Some(reset_wk + Duration::hours(2)),
+                            extra: Default::default(),
+                        },
+                        QuotaBucket {
+                            bucket_id: "3p-5h".into(),
+                            display_name: Some("Five Hour Limit Remaining".into()),
+                            description: None,
+                            window: Some("5h".into()),
+                            remaining_fraction: Some(1.0),
+                            remaining_amount: None,
+                            disabled: Some(true),
+                            reset_time: Some(reset_5h),
+                            extra: Default::default(),
+                        },
+                    ],
+                },
+            ],
+            buckets: vec![],
+            description: None,
+            fetched_at: Some(now),
+        };
+
+        let metrics = extract_summary_metrics(&summary);
+        assert_eq!(metrics.gemini_5h_pct, Some(MetricState::Disabled));
+        assert_eq!(metrics.gemini_wk_pct, Some(MetricState::Available(0.0)));
+        assert_eq!(metrics.claude_5h_pct, Some(MetricState::Disabled));
+        assert_eq!(metrics.claude_wk_pct, Some(MetricState::Available(0.0)));
+
+        assert_eq!(determine_account_health(&metrics), RowStatus::Exhausted);
+        // Universal Invariant 0: reset_5h must be completely filtered out!
+        assert_eq!(metrics.next_reset, Some(reset_wk));
+    }
+
+    #[test]
+    fn test_extract_summary_metrics_full_capacity_degeneracy() {
+        let now = Utc::now();
+        let summary = QuotaSummary {
+            groups: vec![QuotaGroup {
+                display_name: Some("Gemini Models".into()),
+                description: None,
+                buckets: vec![QuotaBucket {
+                    bucket_id: "gemini-5h".into(),
+                    display_name: Some("Five Hour Limit Remaining".into()),
+                    description: None,
+                    window: Some("5h".into()),
+                    remaining_fraction: Some(1.0),
+                    remaining_amount: None,
+                    disabled: Some(false),
+                    reset_time: Some(now + Duration::hours(5)),
+                    extra: Default::default(),
+                }],
+            }],
+            buckets: vec![],
+            description: None,
+            fetched_at: Some(now),
+        };
+
+        let metrics = extract_summary_metrics(&summary);
+        assert_eq!(metrics.next_reset, None);
+    }
 }

@@ -1,7 +1,9 @@
 mod common;
 
 use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService};
-use agy_orbit::domain::quota::{QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary};
+use agy_orbit::domain::quota::{
+    MetricState, QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary,
+};
 use agy_orbit::error::{OrbitError, Result};
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::quota::FileQuotaCacheAdapter;
@@ -422,8 +424,121 @@ fn test_query_all_quotas_fault_isolation() {
 
     let row_b = rows.iter().find(|r| r.orbit_name == "orbit_b").unwrap();
     assert!(row_b.gemini_5h_pct.is_none());
-    assert!(matches!(row_b.status, RowStatus::AuthExpired(_)));
+    assert!(matches!(row_b.status, RowStatus::TokenStale(_)));
 
     let row_c = rows.iter().find(|r| r.orbit_name == "orbit_c").unwrap();
     assert!(row_c.gemini_5h_pct.is_some());
+}
+
+#[test]
+fn test_query_all_quotas_active_auth_expired() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"tok_active","token_type":"Bearer","refresh_token":"rf_active"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_orbit", None, false).unwrap();
+
+    struct ExpiredQuotaPort;
+    impl QuotaPort for ExpiredQuotaPort {
+        fn fetch_user_quota(&self, _token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::CredentialValidation(
+                "Access token expired or unauthorized (HTTP 401). Run `agy` to refresh.".into(),
+            ))
+        }
+    }
+
+    let cache_port = FileQuotaCacheAdapter;
+    let service = QuotaService::new(&target, &storage, &ExpiredQuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    let rows = service.query_all_quotas(true).unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.orbit_name == "active_orbit")
+        .unwrap();
+    assert!(row.is_active);
+    assert!(matches!(row.status, RowStatus::AuthExpired(_)));
+}
+
+#[test]
+fn test_query_all_quotas_mc_exhausted_scenario() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"tok_mc","token_type":"Bearer","refresh_token":"rf_mc"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("mc", None, false).unwrap();
+
+    let now = Utc::now();
+    let reset_5h = now + Duration::hours(5);
+    let reset_wk = now + Duration::days(4);
+
+    struct McQuotaPort {
+        reset_5h: chrono::DateTime<Utc>,
+        reset_wk: chrono::DateTime<Utc>,
+    }
+
+    impl QuotaPort for McQuotaPort {
+        fn fetch_user_quota(&self, _token: &str) -> Result<QuotaSummary> {
+            Ok(QuotaSummary {
+                groups: vec![QuotaGroup {
+                    display_name: Some("Gemini Models".into()),
+                    description: None,
+                    buckets: vec![
+                        QuotaBucket {
+                            bucket_id: "gemini-weekly".into(),
+                            display_name: Some("Weekly Limit Remaining".into()),
+                            description: None,
+                            window: Some("weekly".into()),
+                            remaining_fraction: Some(0.0),
+                            remaining_amount: None,
+                            disabled: None,
+                            reset_time: Some(self.reset_wk),
+                            extra: Default::default(),
+                        },
+                        QuotaBucket {
+                            bucket_id: "gemini-5h".into(),
+                            display_name: Some("Five Hour Limit Remaining".into()),
+                            description: None,
+                            window: Some("5h".into()),
+                            remaining_fraction: Some(1.0),
+                            remaining_amount: None,
+                            disabled: Some(true),
+                            reset_time: Some(self.reset_5h),
+                            extra: Default::default(),
+                        },
+                    ],
+                }],
+                buckets: vec![],
+                description: None,
+                fetched_at: Some(Utc::now()),
+            })
+        }
+    }
+
+    let cache_port = FileQuotaCacheAdapter;
+    let port = McQuotaPort { reset_5h, reset_wk };
+    let service = QuotaService::new(&target, &storage, &port, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    let rows = service.query_all_quotas(true).unwrap();
+    let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
+    assert_eq!(mc_row.gemini_5h_pct, Some(MetricState::Disabled));
+    assert_eq!(mc_row.gemini_wk_pct, Some(MetricState::Available(0.0)));
+    assert_eq!(mc_row.status, RowStatus::Exhausted);
+    // Universal Invariant 0: reset_5h is ignored, next_reset must be reset_wk
+    assert_eq!(mc_row.next_reset, Some(reset_wk));
 }

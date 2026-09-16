@@ -1,10 +1,10 @@
 use crate::app::quota::{MultiQuotaRowData, QuotaViewData, RowStatus};
-use crate::domain::quota::QuotaBucket;
+use crate::domain::quota::{MetricState, QuotaBucket};
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
-use comfy_table::{Cell, Color, Row, Table};
+use comfy_table::{Attribute, Cell, Color, Row, Table};
 
 const BAR_WIDTH: usize = 20;
 
@@ -124,7 +124,7 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
             Cell::new("Gemini Wk").fg(Color::Cyan),
             Cell::new("Claude 5h").fg(Color::Cyan),
             Cell::new("Claude Wk").fg(Color::Cyan),
-            Cell::new("Status").fg(Color::Cyan),
+            Cell::new("Health").fg(Color::Cyan),
             Cell::new("Next Reset").fg(Color::Cyan),
         ]);
 
@@ -144,16 +144,16 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
         let email_str = row.account_email.as_deref().unwrap_or("unknown");
         let email_cell = Cell::new(email_str);
 
-        let g5_cell = format_pct_cell(row.gemini_5h_pct);
-        let gw_cell = format_pct_cell(row.gemini_wk_pct);
-        let c5_cell = format_pct_cell(row.claude_5h_pct);
-        let cw_cell = format_pct_cell(row.claude_wk_pct);
+        let g5_cell = format_metric_cell(row.gemini_5h_pct);
+        let gw_cell = format_metric_cell(row.gemini_wk_pct);
+        let c5_cell = format_metric_cell(row.claude_5h_pct);
+        let cw_cell = format_metric_cell(row.claude_wk_pct);
 
         let (status_str, status_color) = match &row.status {
-            RowStatus::Active => ("Active", Color::Green),
-            RowStatus::Fresh => ("Fresh", Color::Green),
-            RowStatus::Cached => ("Cached", Color::Yellow),
-            RowStatus::Refreshed => ("Refreshed", Color::Cyan),
+            RowStatus::Ready => ("Ready", Color::Green),
+            RowStatus::Throttled => ("Throttled", Color::Yellow),
+            RowStatus::Exhausted => ("Exhausted", Color::Red),
+            RowStatus::TokenStale(_) => ("Token Stale", Color::Yellow),
             RowStatus::AuthExpired(_) => ("Auth Expired", Color::Red),
             RowStatus::Error(_) => ("Error", Color::Red),
         };
@@ -181,7 +181,7 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     println!(
         "{} {}",
         "*".green().bold(),
-        "Indicates currently active account or Orbit".dimmed()
+        "Active orbit  |  DIS: Disabled by Google policy (weekly quota exhausted)".dimmed()
     );
 
     let has_unmanaged = rows.iter().any(|r| r.orbit_name == "(unmanaged)");
@@ -193,7 +193,7 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
         );
     }
 
-    // If any row has AuthExpired or Error, show detail warnings below table
+    // Display notices or warnings for non-ready states below table
     for row in rows {
         let target_type = if row.orbit_name == "(unmanaged)" {
             "Account"
@@ -201,6 +201,15 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
             "Orbit"
         };
         match &row.status {
+            RowStatus::TokenStale(msg) => {
+                println!(
+                    "{} {} '{}': {}",
+                    "ℹ Notice:".cyan().bold(),
+                    target_type,
+                    row.orbit_name.bold(),
+                    msg.cyan()
+                );
+            }
             RowStatus::AuthExpired(msg) => {
                 println!(
                     "{} {} '{}': {}",
@@ -225,9 +234,12 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     println!();
 }
 
-fn format_pct_cell(pct_opt: Option<f64>) -> Cell {
-    match pct_opt {
-        Some(pct) => {
+fn format_metric_cell(metric_opt: Option<MetricState>) -> Cell {
+    match metric_opt {
+        Some(MetricState::Disabled) => Cell::new("   DIS")
+            .fg(Color::Red)
+            .add_attribute(Attribute::Bold),
+        Some(MetricState::Available(pct)) => {
             let s = format!("{:>5.1}%", pct);
             if pct >= 50.0 {
                 Cell::new(s).fg(Color::Green)
@@ -237,7 +249,7 @@ fn format_pct_cell(pct_opt: Option<f64>) -> Cell {
                 Cell::new(s).fg(Color::Red)
             }
         }
-        None => Cell::new("    -").fg(Color::DarkGrey),
+        None => Cell::new("     -").fg(Color::DarkGrey),
     }
 }
 
@@ -356,5 +368,17 @@ mod tests {
     fn test_sanitize_str() {
         let malicious = "Gemini\x1b[31m Pro\r\n";
         assert_eq!(sanitize_str(malicious), "Gemini[31m Pro");
+    }
+
+    #[test]
+    fn test_format_metric_cell() {
+        let dis = format_metric_cell(Some(MetricState::Disabled));
+        assert_eq!(dis.content(), "   DIS");
+
+        let avail = format_metric_cell(Some(MetricState::Available(85.4)));
+        assert_eq!(avail.content(), " 85.4%");
+
+        let none = format_metric_cell(None);
+        assert_eq!(none.content(), "     -");
     }
 }
