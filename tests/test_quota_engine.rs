@@ -1,6 +1,6 @@
 mod common;
 
-use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService};
+use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService, StaleReason};
 use agy_orbit::domain::quota::{
     MetricState, QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary,
 };
@@ -541,4 +541,135 @@ fn test_query_all_quotas_mc_exhausted_scenario() {
     assert_eq!(mc_row.status, RowStatus::Exhausted);
     // Universal Invariant 0: reset_5h is ignored, next_reset must be reset_wk
     assert_eq!(mc_row.next_reset, Some(reset_wk));
+}
+
+#[test]
+fn test_query_quota_401_falls_back_to_cache() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // 1. Setup active orbit 'active_acc' and saved orbit 'mc'
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"tok_active","token_type":"Bearer","refresh_token":"rf_active"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_orbit", None, false).unwrap();
+
+    let mc_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"tok_mc_expired","token_type":"Bearer","refresh_token":"rf_mc"}}"#;
+    keyring.set_secret(mc_secret).unwrap();
+    snap_service.save("mc", None, false).unwrap();
+
+    // Switch active in keyring back to active_orbit
+    keyring.set_secret(secret).unwrap();
+
+    // 2. Populate expired cache for mc (cached 24 minutes ago, ttl 60s)
+    let cache_port = FileQuotaCacheAdapter;
+    let now = Utc::now();
+    let cached_summary = sample_quota_summary();
+    let cache_entry = QuotaCacheEntry {
+        orbit_name: "mc".into(),
+        account_email: Some("mc@example.com".into()),
+        cached_at: now - Duration::minutes(24),
+        summary: cached_summary,
+    };
+    cache_port.save_quota_cache(&cache_entry).unwrap();
+
+    // 3. Port returns 401 for mc
+    struct Expired401QuotaPort;
+    impl QuotaPort for Expired401QuotaPort {
+        fn fetch_user_quota(&self, _token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::CredentialValidation(
+                "Access token expired or unauthorized (HTTP 401). Run `agy` to refresh.".into(),
+            ))
+        }
+    }
+
+    let service = QuotaService::new(&target, &storage, &Expired401QuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    // Single query for 'mc'
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("mc".into()),
+            refresh: false,
+        })
+        .unwrap();
+    assert!(view_data.is_stale);
+    assert_eq!(view_data.stale_reason, Some(StaleReason::TokenExpired));
+    assert!(view_data.warning.is_some());
+    assert_eq!(view_data.account_email.as_deref(), Some("mc@example.com"));
+
+    // Multi query for all orbits
+    let rows = service.query_all_quotas(false).unwrap();
+    let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
+    assert!(!mc_row.is_active);
+    assert!(mc_row.is_stale);
+    assert!(mc_row.gemini_5h_pct.is_some());
+    assert!(mc_row.next_reset.is_some());
+    assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
+}
+
+#[test]
+fn test_query_quota_401_cache_email_mismatch_isolated() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"tok_active","token_type":"Bearer","refresh_token":"rf_active"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_orbit", None, false).unwrap();
+
+    let mc_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"tok_mc_expired","token_type":"Bearer","refresh_token":"rf_mc"}}"#;
+    keyring.set_secret(mc_secret).unwrap();
+    snap_service.save("mc", None, false).unwrap();
+
+    // Switch active in keyring back to active_orbit
+    keyring.set_secret(secret).unwrap();
+
+    // Cache on disk has mismatched email: 'other@example.com'
+    let cache_port = FileQuotaCacheAdapter;
+    let now = Utc::now();
+    let cached_summary = sample_quota_summary();
+    let cache_entry = QuotaCacheEntry {
+        orbit_name: "mc".into(),
+        account_email: Some("other@example.com".into()),
+        cached_at: now - Duration::minutes(24),
+        summary: cached_summary,
+    };
+    cache_port.save_quota_cache(&cache_entry).unwrap();
+
+    struct Expired401QuotaPort;
+    impl QuotaPort for Expired401QuotaPort {
+        fn fetch_user_quota(&self, _token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::CredentialValidation(
+                "Access token expired or unauthorized (HTTP 401). Run `agy` to refresh.".into(),
+            ))
+        }
+    }
+
+    let service = QuotaService::new(&target, &storage, &Expired401QuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    // Single query fails because mismatched cache is discarded and cannot be used
+    let res = service.query_quota(QuotaQueryOptions {
+        orbit: Some("mc".into()),
+        refresh: false,
+    });
+    assert!(res.is_err());
+
+    // In multi query, mc row has None metrics (dashes)
+    let rows = service.query_all_quotas(false).unwrap();
+    let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
+    assert_eq!(mc_row.gemini_5h_pct, None);
+    assert_eq!(mc_row.next_reset, None);
+    assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
 }

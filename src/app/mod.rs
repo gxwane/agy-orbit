@@ -8,7 +8,10 @@ pub mod uninstall;
 pub mod upgrade;
 
 pub use query::{QueryService, WhoamiStatus};
-pub use quota::{MultiQuotaRowData, QuotaQueryOptions, QuotaService, QuotaViewData, RowStatus};
+pub use quota::{
+    MultiQuotaRowData, QuotaQueryOptions, QuotaService, QuotaViewData, RowStatus, StaleReason,
+    resolve_row_status,
+};
 pub use recovery::RecoveryService;
 pub use runner::{RunOptions, RunService};
 pub use snapshot::SnapshotService;

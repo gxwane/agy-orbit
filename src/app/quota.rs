@@ -16,12 +16,20 @@ pub struct QuotaQueryOptions {
     pub refresh: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleReason {
+    TokenExpired,
+    RateLimited,
+    NetworkError,
+}
+
 #[derive(Debug, Clone)]
 pub struct QuotaViewData {
     pub orbit_name: String,
     pub account_email: Option<String>,
     pub summary: QuotaSummary,
     pub is_stale: bool,
+    pub stale_reason: Option<StaleReason>,
     pub warning: Option<String>,
 }
 
@@ -232,14 +240,18 @@ impl<'a> QuotaService<'a> {
         };
 
         // 1. Check cached quota (TTL: 60 seconds) with email verification
-        let cached_entry = self.cache_port.load_quota_cache(cache_key).ok().flatten();
-        let is_valid_cache = if let Some(ref cache) = cached_entry {
-            let email_matches = match (&account_email, &cache.account_email) {
+        let cached_entry = self
+            .cache_port
+            .load_quota_cache(cache_key)
+            .ok()
+            .flatten()
+            .filter(|cache| match (&account_email, &cache.account_email) {
                 (Some(curr), Some(cached)) => curr.eq_ignore_ascii_case(cached),
                 (None, None) => true,
                 _ => false,
-            };
-            email_matches && cache.is_fresh(60)
+            });
+        let is_valid_cache = if let Some(ref cache) = cached_entry {
+            cache.is_fresh(60)
         } else {
             false
         };
@@ -251,6 +263,7 @@ impl<'a> QuotaService<'a> {
                 account_email,
                 summary: cache.summary,
                 is_stale: false,
+                stale_reason: None,
                 warning: None,
             });
         }
@@ -281,6 +294,7 @@ impl<'a> QuotaService<'a> {
                     account_email,
                     summary,
                     is_stale: false,
+                    stale_reason: None,
                     warning: None,
                 })
             }
@@ -298,6 +312,7 @@ impl<'a> QuotaService<'a> {
                         account_email,
                         summary: cache.summary,
                         is_stale: true,
+                        stale_reason: Some(StaleReason::RateLimited),
                         warning: Some(msg),
                     })
                 } else {
@@ -311,11 +326,36 @@ impl<'a> QuotaService<'a> {
                         account_email,
                         summary: cache.summary,
                         is_stale: true,
+                        stale_reason: Some(StaleReason::NetworkError),
                         warning: Some(format!("Network error: {err_msg}. Showing cached data.")),
                     })
                 } else {
                     Err(OrbitError::QuotaHttp(err_msg))
                 }
+            }
+            Err(OrbitError::CredentialValidation(ref msg))
+                if (msg.contains("invalid_grant")
+                    || msg.contains("expired")
+                    || msg.contains("HTTP 401")
+                    || msg.contains("unauthorized"))
+                    && cached_entry.is_some() =>
+            {
+                let cache = cached_entry.unwrap();
+                let warn_msg = if orbit_name == "(unmanaged)" {
+                    "Cached access token expired. Showing cached quota data.".to_string()
+                } else {
+                    format!(
+                        "Cached access token expired for orbit '{orbit_name}'. Showing cached quota data."
+                    )
+                };
+                Ok(QuotaViewData {
+                    orbit_name,
+                    account_email,
+                    summary: cache.summary,
+                    is_stale: true,
+                    stale_reason: Some(StaleReason::TokenExpired),
+                    warning: Some(warn_msg),
+                })
             }
             Err(e) => Err(e),
         }
@@ -353,7 +393,7 @@ impl<'a> QuotaService<'a> {
             }) {
                 Ok(view_data) => {
                     let metrics = extract_summary_metrics(&view_data.summary);
-                    let health = determine_account_health(&metrics);
+                    let health = resolve_row_status(true, "(unmanaged)", &view_data, &metrics);
                     MultiQuotaRowData {
                         orbit_name: "(unmanaged)".to_string(),
                         account_email: Some(email.clone()),
@@ -469,7 +509,12 @@ impl<'a> QuotaService<'a> {
                             }) {
                                 Ok(view_data) => {
                                     let metrics = extract_summary_metrics(&view_data.summary);
-                                    let health = determine_account_health(&metrics);
+                                    let health = resolve_row_status(
+                                        is_active,
+                                        &thread_name,
+                                        &view_data,
+                                        &metrics,
+                                    );
                                     MultiQuotaRowData {
                                         orbit_name: thread_name.clone(),
                                         account_email: view_data
@@ -612,6 +657,40 @@ pub fn determine_account_health(metrics: &SummaryMetrics) -> RowStatus {
         RowStatus::Throttled
     } else {
         RowStatus::Ready
+    }
+}
+
+/// Resolve the row status for an account based on view data and freshness.
+pub fn resolve_row_status(
+    is_active: bool,
+    orbit_name: &str,
+    view_data: &QuotaViewData,
+    metrics: &SummaryMetrics,
+) -> RowStatus {
+    if view_data.is_stale {
+        match view_data.stale_reason {
+            Some(StaleReason::TokenExpired) => {
+                if is_active {
+                    RowStatus::AuthExpired(
+                        "Active account auth expired. Run `agy` to re-login.".to_string(),
+                    )
+                } else {
+                    RowStatus::TokenStale(format!(
+                        "Cached access token expired. Run `agyo use {}` (auto-refreshes on launch).",
+                        orbit_name
+                    ))
+                }
+            }
+            Some(StaleReason::RateLimited) => {
+                RowStatus::Error("Rate limited (HTTP 429). Showing cached data.".to_string())
+            }
+            Some(StaleReason::NetworkError) => {
+                RowStatus::Error("Network error. Showing cached data.".to_string())
+            }
+            None => determine_account_health(metrics),
+        }
+    } else {
+        determine_account_health(metrics)
     }
 }
 
@@ -859,5 +938,72 @@ mod tests {
 
         let metrics = extract_summary_metrics(&summary);
         assert_eq!(metrics.next_reset, None);
+    }
+
+    #[test]
+    fn test_resolve_row_status() {
+        let metrics = SummaryMetrics {
+            gemini_5h_pct: Some(MetricState::Available(80.0)),
+            ..Default::default()
+        };
+
+        let view_fresh = QuotaViewData {
+            orbit_name: "test_orbit".into(),
+            account_email: Some("test@example.com".into()),
+            summary: QuotaSummary {
+                groups: vec![],
+                buckets: vec![],
+                description: None,
+                fetched_at: Some(Utc::now()),
+            },
+            is_stale: false,
+            stale_reason: None,
+            warning: None,
+        };
+
+        // Fresh data delegates to determine_account_health
+        assert_eq!(
+            resolve_row_status(false, "test_orbit", &view_fresh, &metrics),
+            RowStatus::Ready
+        );
+
+        // Stale due to token expired on inactive orbit -> TokenStale
+        let view_expired_inactive = QuotaViewData {
+            is_stale: true,
+            stale_reason: Some(StaleReason::TokenExpired),
+            ..view_fresh.clone()
+        };
+        assert!(matches!(
+            resolve_row_status(false, "test_orbit", &view_expired_inactive, &metrics),
+            RowStatus::TokenStale(_)
+        ));
+
+        // Stale due to token expired on active orbit -> AuthExpired
+        assert!(matches!(
+            resolve_row_status(true, "test_orbit", &view_expired_inactive, &metrics),
+            RowStatus::AuthExpired(_)
+        ));
+
+        // Stale due to rate limited -> Error
+        let view_rate_limited = QuotaViewData {
+            is_stale: true,
+            stale_reason: Some(StaleReason::RateLimited),
+            ..view_fresh.clone()
+        };
+        assert!(matches!(
+            resolve_row_status(false, "test_orbit", &view_rate_limited, &metrics),
+            RowStatus::Error(_)
+        ));
+
+        // Stale due to network error -> Error
+        let view_network_err = QuotaViewData {
+            is_stale: true,
+            stale_reason: Some(StaleReason::NetworkError),
+            ..view_fresh.clone()
+        };
+        assert!(matches!(
+            resolve_row_status(false, "test_orbit", &view_network_err, &metrics),
+            RowStatus::Error(_)
+        ));
     }
 }
