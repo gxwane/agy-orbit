@@ -1,6 +1,7 @@
 use crate::app::query::WhoamiStatus;
 use crate::domain::orbit::ActiveState;
 use colored::Colorize;
+use std::io::IsTerminal;
 
 pub fn render_whoami(status: &WhoamiStatus) {
     match &status.active_state {
@@ -12,6 +13,13 @@ pub fn render_whoami(status: &WhoamiStatus) {
                 "Active Account: {} (not managed by any Orbit yet)",
                 email.cyan()
             );
+            if std::io::stdout().is_terminal() {
+                println!(
+                    "{}",
+                    "💡 Tip: Run 'agyo save <name>' to save and manage this account in Orbit."
+                        .dimmed()
+                );
+            }
         }
         ActiveState::Anonymous => {
             println!("No active Google account found in Antigravity.");

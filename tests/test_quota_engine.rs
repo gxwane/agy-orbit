@@ -811,3 +811,130 @@ fn test_quota_service_silent_auto_refresh_invalid_grant_falls_back() {
     assert!(mc_row.is_stale);
     assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
 }
+
+#[test]
+fn test_quota_unauthorized_typed_error_triggers_reactive_renewal() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // 1. Save an initial orbit with a stale token and valid refresh token
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6InR5cGVkXzQwMUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"old_tok","token_type":"Bearer","refresh_token":"valid_rf"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("typed_orbit", None, false).unwrap();
+
+    // 2. MockQuotaPort: returns QuotaUnauthorized on "old_tok", but Success on "refreshed_tok"
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let cc = call_count.clone();
+
+    struct ReactiveTyped401Port {
+        calls: Arc<AtomicUsize>,
+    }
+    impl QuotaPort for ReactiveTyped401Port {
+        fn fetch_user_quota(&self, access_token: &str) -> Result<QuotaSummary> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if access_token == "refreshed_tok" {
+                Ok(sample_quota_summary())
+            } else {
+                Err(OrbitError::QuotaUnauthorized(
+                    "HTTP 401 Unauthorized from endpoint".into(),
+                ))
+            }
+        }
+    }
+
+    let quota_port = ReactiveTyped401Port { calls: cc };
+    let mock_refresh = MockTokenRefresh::with_success(RefreshedToken {
+        access_token: "refreshed_tok".into(),
+        expires_in_secs: 3600,
+        refresh_token: None,
+        id_token: None,
+    });
+    let cache_port = FileQuotaCacheAdapter;
+
+    let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_token_refresh(&mock_refresh);
+
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("typed_orbit".into()),
+            refresh: true,
+        })
+        .expect("QuotaUnauthorized MUST trigger reactive renewal and succeed");
+
+    assert!(!view_data.is_stale);
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "QuotaPort MUST be called twice: initial 401 + retry after refresh"
+    );
+    assert_eq!(
+        mock_refresh.count(),
+        1,
+        "TokenRefreshPort MUST be called exactly once"
+    );
+}
+
+#[test]
+fn test_quota_forbidden_smart_gemini_cli_diagnostics() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // Save orbit with Gemini CLI client_id
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImdlbWluaUBleGFtcGxlLmNvbSIsImF1ZCI6IjY4MTI1NTgwOTM5NS1vbzhmdDJvcHJkcm5wOWUzYXFmNmF2M2htZGliMTNqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIn0.sig","token":{"access_token":"gemini_tok","token_type":"Bearer","refresh_token":"rf"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("gemini_orbit", None, false).unwrap();
+
+    struct ForbiddenQuotaPort;
+    impl QuotaPort for ForbiddenQuotaPort {
+        fn fetch_user_quota(&self, _access_token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::QuotaForbidden(
+                "HTTP 403 Forbidden from https://cloudcode-pa.googleapis.com".into(),
+            ))
+        }
+    }
+
+    let cache_port = FileQuotaCacheAdapter;
+    let service = QuotaService::new(&target, &storage, &ForbiddenQuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref());
+
+    let err = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("gemini_orbit".into()),
+            refresh: true,
+        })
+        .unwrap_err();
+
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("Gemini CLI"),
+        "Error message MUST explicitly diagnose Gemini CLI credentials: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("agy auth login") || err_msg.contains("official"),
+        "Error message MUST provide actionable guidance to authenticate with official CLI: {err_msg}"
+    );
+
+    let rows = service.query_all_quotas(true).unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.orbit_name == "gemini_orbit")
+        .unwrap();
+    assert!(
+        matches!(row.status, RowStatus::Error(ref m) if m.contains("Forbidden (403)")),
+        "Multi-quota row status MUST indicate Forbidden (403) instead of generic Network error: {:?}",
+        row.status
+    );
+}

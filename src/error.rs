@@ -49,6 +49,12 @@ pub enum OrbitError {
     #[error("Quota API error: {0}")]
     QuotaHttp(String),
 
+    #[error("Quota API authentication failed (HTTP 401): {0}")]
+    QuotaUnauthorized(String),
+
+    #[error("Quota API access forbidden (HTTP 403): {0}")]
+    QuotaForbidden(String),
+
     #[error("Google Quota API rate limit exceeded (HTTP 429){}", .retry_after_secs.map(|s| format!(": retry after {s}s")).unwrap_or_default())]
     QuotaRateLimited { retry_after_secs: Option<u64> },
 

@@ -281,6 +281,12 @@ impl std::fmt::Debug for ResolvedIdentity {
     }
 }
 
+/// Google OAuth Client ID prefix for open-source Gemini CLI
+pub const GEMINI_CLI_CLIENT_ID_PREFIX: &str = "681255809395";
+
+/// Google OAuth Client ID prefix for official Antigravity CLI
+pub const ANTIGRAVITY_CLIENT_ID_PREFIX: &str = "1071006060591";
+
 impl ResolvedIdentity {
     /// Check if the token is already expired or will expire within safety_margin_secs.
     pub fn is_expiring_soon(&self, safety_margin_secs: u64) -> bool {
@@ -290,6 +296,14 @@ impl ResolvedIdentity {
         } else {
             false
         }
+    }
+
+    /// Checks if this identity appears to originate from open-source Gemini CLI rather than official Antigravity.
+    pub fn is_gemini_cli(&self) -> bool {
+        self.client_id
+            .as_deref()
+            .map(|id| id.starts_with(GEMINI_CLI_CLIENT_ID_PREFIX))
+            .unwrap_or(false)
     }
 }
 

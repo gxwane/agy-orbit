@@ -90,6 +90,21 @@ pub struct QuotaService<'a> {
     token_refresh: Option<&'a dyn TokenRefreshPort>,
 }
 
+/// Intelligently diagnose HTTP 403 Forbidden errors from Google Cloud Code PA.
+pub fn diagnose_quota_forbidden(client_id: Option<&str>, err_msg: &str) -> String {
+    let is_gemini_cli = client_id
+        .map(|id| id.starts_with(crate::domain::credentials::GEMINI_CLI_CLIENT_ID_PREFIX))
+        .unwrap_or(false);
+
+    if is_gemini_cli {
+        "Access forbidden (HTTP 403): Credentials were issued by Gemini CLI rather than official Antigravity CLI. Run `agy auth login` to authenticate with official credentials.".to_string()
+    } else {
+        format!(
+            "Access forbidden (HTTP 403): Account lacks Cloud Code PA permissions or scope is insufficient. Details: {err_msg}"
+        )
+    }
+}
+
 impl<'a> QuotaService<'a> {
     pub fn new(
         target: &'a dyn TargetPort,
@@ -376,11 +391,18 @@ impl<'a> QuotaService<'a> {
 
         // 4. Reactive renewal (HAC-03):
         // If fetch failed with 401 / expired, and we haven't refreshed yet, and we have refresh_token:
-        if let Err(OrbitError::CredentialValidation(msg)) = &fetch_res
-            && (msg.contains("invalid_grant")
-                || msg.contains("expired")
-                || msg.contains("HTTP 401")
-                || msg.contains("unauthorized"))
+        let is_auth_expired = match &fetch_res {
+            Err(OrbitError::QuotaUnauthorized(_)) => true,
+            Err(OrbitError::CredentialValidation(msg)) => {
+                msg.contains("invalid_grant")
+                    || msg.contains("expired")
+                    || msg.contains("HTTP 401")
+                    || msg.contains("unauthorized")
+            }
+            _ => false,
+        };
+
+        if is_auth_expired
             && refreshed_token_opt.is_none()
             && let Some(ref rt) = auth.refresh_token
             && let Some(refresh_port) = self.token_refresh
@@ -432,6 +454,43 @@ impl<'a> QuotaService<'a> {
                     })
                 } else {
                     Err(OrbitError::QuotaRateLimited { retry_after_secs })
+                }
+            }
+            Err(OrbitError::QuotaForbidden(err_msg)) => {
+                let diag = diagnose_quota_forbidden(auth.client_id.as_deref(), &err_msg);
+                if let Some(cache) = cached_entry {
+                    Ok(QuotaViewData {
+                        orbit_name,
+                        account_email,
+                        summary: cache.summary,
+                        is_stale: true,
+                        stale_reason: Some(StaleReason::TokenExpired),
+                        warning: Some(diag),
+                    })
+                } else {
+                    Err(OrbitError::QuotaForbidden(diag))
+                }
+            }
+            Err(OrbitError::QuotaUnauthorized(err_msg)) => {
+                if let Some(cache) = cached_entry {
+                    let warn_msg = if orbit_name == "(unmanaged)" {
+                        "Cached access token expired (HTTP 401). Showing cached quota data."
+                            .to_string()
+                    } else {
+                        format!(
+                            "Cached access token expired (HTTP 401) for orbit '{orbit_name}'. Showing cached quota data."
+                        )
+                    };
+                    Ok(QuotaViewData {
+                        orbit_name,
+                        account_email,
+                        summary: cache.summary,
+                        is_stale: true,
+                        stale_reason: Some(StaleReason::TokenExpired),
+                        warning: Some(warn_msg),
+                    })
+                } else {
+                    Err(OrbitError::QuotaUnauthorized(err_msg))
                 }
             }
             Err(OrbitError::QuotaHttp(err_msg)) => {
@@ -532,6 +591,10 @@ impl<'a> QuotaService<'a> {
                     claude_5h_pct: None,
                     claude_wk_pct: None,
                     status: match e {
+                        OrbitError::QuotaUnauthorized(_) => RowStatus::AuthExpired(
+                            "Active account auth expired (HTTP 401). Run `agy` to re-login."
+                                .to_string(),
+                        ),
                         OrbitError::CredentialValidation(ref msg)
                             if msg.contains("invalid_grant")
                                 || msg.contains("expired")
@@ -541,6 +604,9 @@ impl<'a> QuotaService<'a> {
                             RowStatus::AuthExpired(
                                 "Active account auth expired. Run `agy` to re-login.".to_string(),
                             )
+                        }
+                        OrbitError::QuotaForbidden(ref msg) => {
+                            RowStatus::Error(format!("Forbidden (403): {msg}"))
                         }
                         OrbitError::QuotaRateLimited { .. } => {
                             RowStatus::Error("Rate limited (HTTP 429)".to_string())
@@ -647,6 +713,17 @@ impl<'a> QuotaService<'a> {
                                 }
                                 Err(e) => {
                                     let status = match e {
+                                        OrbitError::QuotaUnauthorized(_) => {
+                                            if is_active {
+                                                RowStatus::AuthExpired(
+                                                    "Active account auth expired (HTTP 401). Run `agy` to re-login.".to_string(),
+                                                )
+                                            } else {
+                                                RowStatus::TokenStale(
+                                                    format!("Cached access token expired (HTTP 401). Run `agyo use {}` (auto-refreshes on launch).", thread_name),
+                                                )
+                                            }
+                                        }
                                         OrbitError::CredentialValidation(ref msg)
                                             if msg.contains("invalid_grant")
                                                 || msg.contains("expired")
@@ -662,6 +739,9 @@ impl<'a> QuotaService<'a> {
                                                     format!("Cached access token expired. Run `agyo use {}` (auto-refreshes on launch).", thread_name),
                                                 )
                                             }
+                                        }
+                                        OrbitError::QuotaForbidden(ref msg) => {
+                                            RowStatus::Error(format!("Forbidden (403): {msg}"))
                                         }
                                         OrbitError::QuotaRateLimited { .. } => {
                                             RowStatus::Error("Rate limited (HTTP 429)".to_string())
