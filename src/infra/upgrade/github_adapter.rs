@@ -7,12 +7,7 @@ use std::time::Duration;
 const GITHUB_REPO_RELEASES_URL: &str = "https://api.github.com/repos/gxwane/agy-orbit/releases";
 const MAX_REDIRECTS: u32 = 5;
 
-const ALLOWED_HOSTS: &[&str] = &[
-    "api.github.com",
-    "github.com",
-    "objects.githubusercontent.com",
-    "raw.githubusercontent.com",
-];
+const ALLOWED_HOSTS: &[&str] = &["api.github.com", "github.com", "githubusercontent.com"];
 
 #[derive(Debug, Deserialize)]
 struct GithubAssetDto {
@@ -67,10 +62,10 @@ impl GitHubReleaseAdapter {
             ));
         }
 
-        let host = extract_host_from_url(url_str)?;
-        let is_allowed = ALLOWED_HOSTS.iter().any(|allowed| {
-            host.eq_ignore_ascii_case(allowed) || host.ends_with(&format!(".{allowed}"))
-        });
+        let host = extract_host_from_url(url_str)?.to_ascii_lowercase();
+        let is_allowed = ALLOWED_HOSTS
+            .iter()
+            .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")));
 
         if !is_allowed {
             return Err(OrbitError::SecurityViolation(format!(
@@ -189,12 +184,19 @@ impl ReleaseProviderPort for GitHubReleaseAdapter {
         loop {
             Self::validate_url(&current_url)?;
 
+            let host = extract_host_from_url(&current_url)?.to_ascii_lowercase();
+
             let mut req = agent.get(&current_url).set(
                 "User-Agent",
                 &format!("agy-orbit/{}", env!("CARGO_PKG_VERSION")),
             );
 
-            if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
+            // Only attach Authorization header to official GitHub API/web domains.
+            // When redirected to external CDN / object storage (e.g. *.githubusercontent.com),
+            // strip the Authorization header to prevent token leakage and storage authentication conflict.
+            if (host == "api.github.com" || host == "github.com")
+                && let Ok(token) =
+                    std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
             {
                 let trimmed = token.trim();
                 if !trimmed.is_empty() {
@@ -207,17 +209,7 @@ impl ReleaseProviderPort for GitHubReleaseAdapter {
                 Err(ureq::Error::Status(status, res))
                     if status == 301 || status == 302 || status == 307 || status == 308 =>
                 {
-                    redirect_count += 1;
-                    if redirect_count > MAX_REDIRECTS {
-                        return Err(OrbitError::SecurityViolation(
-                            "Too many redirects during asset download".into(),
-                        ));
-                    }
-                    let location = res.header("Location").ok_or_else(|| {
-                        OrbitError::SecurityViolation("Redirect without Location header".into())
-                    })?;
-                    current_url = location.to_string();
-                    continue;
+                    res
                 }
                 Err(ureq::Error::Status(status, res)) if status == 403 || status == 429 => {
                     return Err(Self::handle_rate_limit_response(&res));
@@ -234,6 +226,28 @@ impl ReleaseProviderPort for GitHubReleaseAdapter {
                 }
             };
 
+            let status = response.status();
+            if status == 301 || status == 302 || status == 307 || status == 308 {
+                redirect_count += 1;
+                if redirect_count > MAX_REDIRECTS {
+                    return Err(OrbitError::SecurityViolation(
+                        "Too many redirects during asset download".into(),
+                    ));
+                }
+                let location = response.header("Location").ok_or_else(|| {
+                    OrbitError::SecurityViolation("Redirect without Location header".into())
+                })?;
+
+                current_url = resolve_redirect_url(&current_url, location)?;
+                continue;
+            }
+
+            if status != 200 {
+                return Err(OrbitError::Upgrade(format!(
+                    "Asset download returned unexpected HTTP status {status}"
+                )));
+            }
+
             let mut bytes = Vec::new();
             use std::io::Read;
             // Max 100 MiB asset download guard
@@ -243,6 +257,26 @@ impl ReleaseProviderPort for GitHubReleaseAdapter {
                 .read_to_end(&mut bytes)?;
             return Ok(bytes);
         }
+    }
+}
+
+fn resolve_redirect_url(base_url: &str, location: &str) -> Result<String> {
+    let trimmed = location.trim();
+    if trimmed.starts_with("https://") {
+        Ok(trimmed.to_string())
+    } else if trimmed.starts_with("//") {
+        // Protocol-relative URL - reject to prevent scheme confusion or downgrade
+        Err(OrbitError::SecurityViolation(
+            "Protocol-relative redirect URL rejected".into(),
+        ))
+    } else if trimmed.starts_with('/') {
+        // Relative path redirect (RFC 7231 §7.1.2) - resolve against base scheme and authority
+        let base_host = extract_host_from_url(base_url)?;
+        Ok(format!("https://{base_host}{trimmed}"))
+    } else {
+        Err(OrbitError::SecurityViolation(format!(
+            "Unsupported or invalid redirect Location: '{location}'"
+        )))
     }
 }
 
@@ -285,6 +319,20 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            GitHubReleaseAdapter::validate_url(
+                "https://release-assets.githubusercontent.com/bucket/asset.zip"
+            )
+            .is_ok()
+        );
+        // Case-insensitive verification (RFC 3986)
+        assert!(
+            GitHubReleaseAdapter::validate_url(
+                "https://Release-Assets.GitHubUserContent.com/bucket/asset.zip"
+            )
+            .is_ok()
+        );
+        assert!(GitHubReleaseAdapter::validate_url("https://API.GitHub.com/repos/foo").is_ok());
 
         // Insecure HTTP rejected
         assert!(GitHubReleaseAdapter::validate_url("http://github.com/foo/bar").is_err());
@@ -293,6 +341,17 @@ mod tests {
         assert!(GitHubReleaseAdapter::validate_url("https://malicious.com/payload.zip").is_err());
         assert!(
             GitHubReleaseAdapter::validate_url("https://169.254.169.254/latest/meta-data").is_err()
+        );
+        // Domain suffix spoofing rejected (e.g. evilgithub.com or githubusercontent.com.evil.com)
+        assert!(
+            GitHubReleaseAdapter::validate_url("https://evilgithubusercontent.com/asset.zip")
+                .is_err()
+        );
+        assert!(
+            GitHubReleaseAdapter::validate_url(
+                "https://githubusercontent.com.attacker.com/asset.zip"
+            )
+            .is_err()
         );
 
         // Userinfo injection rejected
@@ -313,6 +372,31 @@ mod tests {
                 "https://objects.githubusercontent.com/asset.tar.gz?token=user@host"
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_resolve_redirect_url() {
+        let base = "https://github.com/gxwane/agy-orbit/releases/download/v0.1.0/agyo.zip";
+
+        // Absolute HTTPS URL
+        let abs = "https://release-assets.githubusercontent.com/github-production/agyo.zip";
+        assert_eq!(resolve_redirect_url(base, abs).unwrap(), abs);
+
+        // Relative path
+        let rel = "/gxwane/agy-orbit/releases/download/v0.1.0/redirected.zip";
+        assert_eq!(
+            resolve_redirect_url(base, rel).unwrap(),
+            format!("https://github.com{rel}")
+        );
+
+        // Protocol-relative rejected
+        assert!(resolve_redirect_url(base, "//evil.com/payload.zip").is_err());
+
+        // Insecure HTTP rejected
+        assert!(
+            resolve_redirect_url(base, "http://release-assets.githubusercontent.com/agyo.zip")
+                .is_err()
         );
     }
 }
