@@ -29,6 +29,17 @@ pub struct RunService<'a> {
     pub lease: &'a dyn LeasePort,
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+static TEST_SESSION_OVERRIDE: std::sync::RwLock<Option<bool>> = std::sync::RwLock::new(None);
+
+#[cfg(any(test, feature = "test-utils"))]
+pub fn set_test_session_override(is_active: Option<bool>) {
+    let mut lock = TEST_SESSION_OVERRIDE
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    *lock = is_active;
+}
+
 impl<'a> RunService<'a> {
     pub fn new(
         target: &'a dyn TargetPort,
@@ -50,7 +61,17 @@ impl<'a> RunService<'a> {
     /// protection and post-execution two-way token synchronization.
     pub fn run(&self, opts: RunOptions) -> Result<i32> {
         // 1. Guard against recursive/nested invocation
-        if std::env::var("AGYO_SESSION_ACTIVE").as_deref() == Ok("1") {
+        #[cfg(any(test, feature = "test-utils"))]
+        let is_session_active = {
+            let lock = TEST_SESSION_OVERRIDE
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            lock.unwrap_or_else(|| std::env::var("AGYO_SESSION_ACTIVE").as_deref() == Ok("1"))
+        };
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let is_session_active = std::env::var("AGYO_SESSION_ACTIVE").as_deref() == Ok("1");
+
+        if is_session_active {
             let current_orbit = std::env::var("AGYO_SESSION_ORBIT").unwrap_or_default();
             let pid = std::env::var("AGYO_SESSION_PID").unwrap_or_default();
             return Err(OrbitError::RecursiveSession {

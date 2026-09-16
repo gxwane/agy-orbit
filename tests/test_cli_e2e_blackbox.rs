@@ -12,7 +12,8 @@ fn apply_sandbox_envs(cmd: &mut Command, sandbox: &TestSandbox) {
         .env("AGYO_HOME", &sandbox.agyo_dir)
         .env("AGYO_RUNTIME_DIR", &sandbox.runtime_dir)
         .env("AGYO_KEYRING_TARGET", &sandbox.keyring_target)
-        .env("AGYO_KEYRING_SERVICE", &sandbox.keyring_service);
+        .env("AGYO_KEYRING_SERVICE", &sandbox.keyring_service)
+        .env_remove("AGYO_SESSION_ACTIVE");
 }
 
 #[test]

@@ -46,6 +46,7 @@ impl TestSandbox {
             target: Some(keyring_target.clone()),
             service: Some(keyring_service.clone()),
         }));
+        agy_orbit::app::runner::set_test_session_override(Some(false));
 
         Self {
             dir,
@@ -77,7 +78,10 @@ impl TestSandbox {
             .env("AGYO_HOME", &self.agyo_dir)
             .env("AGYO_RUNTIME_DIR", &self.runtime_dir)
             .env("AGYO_KEYRING_TARGET", &self.keyring_target)
-            .env("AGYO_KEYRING_SERVICE", &self.keyring_service);
+            .env("AGYO_KEYRING_SERVICE", &self.keyring_service)
+            .env_remove("AGYO_SESSION_ACTIVE")
+            .env_remove("AGYO_SESSION_ORBIT")
+            .env_remove("AGYO_SESSION_PID");
     }
 }
 
@@ -86,5 +90,6 @@ impl Drop for TestSandbox {
         // Clean up in-memory registry upon sandbox drop
         paths::set_test_paths(None);
         os_keyring::set_test_keyring_override(None);
+        agy_orbit::app::runner::set_test_session_override(None);
     }
 }

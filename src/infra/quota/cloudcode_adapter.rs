@@ -5,10 +5,10 @@ use chrono::Utc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_ENDPOINTS: &[&str] = &[
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 ];
 
 const GLOBAL_BUDGET_SECS: u64 = 5;
@@ -114,5 +114,32 @@ impl QuotaPort for CloudCodeQuotaAdapter {
         Err(OrbitError::QuotaHttp(format!(
             "Failed to fetch quota from all endpoints. Last error: {last_error}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_endpoints_order_prioritizes_daily_cloudcode() {
+        let adapter = CloudCodeQuotaAdapter::new();
+        assert_eq!(
+            adapter.endpoints[0],
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+            "daily-cloudcode-pa MUST be the primary endpoint to reflect real Gemini quota consumption"
+        );
+        assert_eq!(
+            adapter.endpoints[1],
+            "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+            "cloudcode-pa MUST be the second endpoint for production fallback"
+        );
+    }
+
+    #[test]
+    fn test_custom_endpoints_override() {
+        let custom = vec!["https://mock-endpoint/quota".to_string()];
+        let adapter = CloudCodeQuotaAdapter::with_endpoints(custom.clone());
+        assert_eq!(adapter.endpoints, custom);
     }
 }
