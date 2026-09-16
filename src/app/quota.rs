@@ -1,9 +1,13 @@
-use crate::domain::credentials::{ResolvedIdentity, resolve_credentials};
+use crate::domain::credentials::{
+    OAuthCreds, ResolvedIdentity, resolve_credentials, update_disk_oauth_tokens,
+    update_secret_tokens, validate_keyring_secret_for_sync,
+};
 use crate::domain::orbit::{ActiveState, OrbitName, resolve_active_state};
 use crate::domain::quota::{MetricState, QuotaBucket, QuotaCacheEntry, QuotaSummary};
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
 use crate::ports::lease::LeasePort;
+use crate::ports::oauth::{RefreshedToken, TokenRefreshPort};
 use crate::ports::quota::{QuotaCachePort, QuotaPort};
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
@@ -70,6 +74,9 @@ struct ResolvedTargetAuth {
     orbit_name: String,
     account_email: Option<String>,
     access_token: String,
+    refresh_token: Option<String>,
+    client_id: Option<String>,
+    is_expiring_soon: bool,
 }
 
 pub struct QuotaService<'a> {
@@ -80,6 +87,7 @@ pub struct QuotaService<'a> {
     quota_port: &'a dyn QuotaPort,
     cache_port: &'a dyn QuotaCachePort,
     lease: Option<&'a dyn LeasePort>,
+    token_refresh: Option<&'a dyn TokenRefreshPort>,
 }
 
 impl<'a> QuotaService<'a> {
@@ -97,6 +105,7 @@ impl<'a> QuotaService<'a> {
             quota_port,
             cache_port,
             lease: None,
+            token_refresh: None,
         }
     }
 
@@ -112,6 +121,11 @@ impl<'a> QuotaService<'a> {
 
     pub fn with_lease(mut self, lease: &'a dyn LeasePort) -> Self {
         self.lease = Some(lease);
+        self
+    }
+
+    pub fn with_token_refresh(mut self, token_refresh: &'a dyn TokenRefreshPort) -> Self {
+        self.token_refresh = Some(token_refresh);
         self
     }
 
@@ -169,10 +183,14 @@ impl<'a> QuotaService<'a> {
                 let live = live_identity.ok_or_else(|| {
                     OrbitError::CredentialValidation("Active credentials not found.".into())
                 })?;
+                let is_expiring_soon = live.is_expiring_soon(60);
                 Ok(ResolvedTargetAuth {
                     orbit_name: orbit_name.to_string(),
                     account_email: Some(record.email.clone()),
                     access_token: live.access_token,
+                    refresh_token: live.refresh_token,
+                    client_id: live.client_id,
+                    is_expiring_soon,
                 })
             } else {
                 let (snapshot, sealed_secret) = self.storage.load_orbit_snapshot(&orbit_name)?;
@@ -196,11 +214,15 @@ impl<'a> QuotaService<'a> {
                         orbit_name
                     ))
                 })?;
+                let is_expiring_soon = id.is_expiring_soon(60);
 
                 Ok(ResolvedTargetAuth {
                     orbit_name: orbit_name.to_string(),
                     account_email: Some(record.email.clone()),
                     access_token: id.access_token,
+                    refresh_token: id.refresh_token,
+                    client_id: id.client_id,
+                    is_expiring_soon,
                 })
             }
         } else {
@@ -209,23 +231,82 @@ impl<'a> QuotaService<'a> {
                     "No valid access token found in OS Keyring or ~/.gemini/oauth_creds.json. Run `agy` to authenticate.".into(),
                 )
             })?;
+            let is_expiring_soon = live.is_expiring_soon(60);
 
             match active_state {
                 ActiveState::Managed { name, email } => Ok(ResolvedTargetAuth {
                     orbit_name: name,
                     account_email: Some(email),
                     access_token: live.access_token,
+                    refresh_token: live.refresh_token,
+                    client_id: live.client_id,
+                    is_expiring_soon,
                 }),
                 ActiveState::Unmanaged { email } => Ok(ResolvedTargetAuth {
                     orbit_name: "(unmanaged)".to_string(),
                     account_email: Some(email),
                     access_token: live.access_token,
+                    refresh_token: live.refresh_token,
+                    client_id: live.client_id,
+                    is_expiring_soon,
                 }),
                 ActiveState::Anonymous => Err(OrbitError::CredentialValidation(
                     "No active Google account found in Antigravity.".into(),
                 )),
             }
         }
+    }
+
+    fn persist_refreshed_tokens(
+        &self,
+        orbit_name_str: &str,
+        refreshed: &RefreshedToken,
+    ) -> Result<()> {
+        if orbit_name_str == "(unmanaged)" {
+            return Ok(());
+        }
+        let orbit_name = OrbitName::new(orbit_name_str)?;
+        let (mut snapshot, sealed_secret) = self.storage.load_orbit_snapshot(&orbit_name)?;
+
+        // 1. Update oauth_creds.json bytes if present
+        if let Some(ref oauth_bytes) = snapshot.oauth_creds
+            && let Ok(updated_oauth) = update_disk_oauth_tokens(
+                oauth_bytes,
+                &refreshed.access_token,
+                refreshed.refresh_token.as_deref(),
+            )
+            && let Ok(oauth_parsed) = serde_json::from_slice::<OAuthCreds>(&updated_oauth)
+            && oauth_parsed.validate_for_sync().is_ok()
+        {
+            snapshot.oauth_creds = Some(updated_oauth);
+        }
+
+        // 2. Update sealed keyring secret if vault is available
+        let mut new_sealed_secret = sealed_secret.clone();
+        if let Some(vault) = self.vault
+            && !sealed_secret.is_empty()
+            && let Ok(raw_secret_bytes) = vault.unseal(&sealed_secret)
+            && let Ok(raw_secret_str) = String::from_utf8(raw_secret_bytes)
+            && let Ok(updated_secret_str) = update_secret_tokens(
+                &raw_secret_str,
+                &refreshed.access_token,
+                refreshed.refresh_token.as_deref(),
+            )
+            && validate_keyring_secret_for_sync(
+                &updated_secret_str,
+                snapshot.oauth_creds.as_deref(),
+            )
+            .is_ok()
+            && let Ok(sealed) = vault.seal(updated_secret_str.as_bytes())
+        {
+            new_sealed_secret = sealed;
+        }
+
+        // 3. Atomically update orbit snapshot files (never touches index.json or system keyring)
+        self.storage
+            .update_orbit_snapshot(&orbit_name, &snapshot, &new_sealed_secret)?;
+
+        Ok(())
     }
 
     pub fn query_quota(&self, opts: QuotaQueryOptions) -> Result<QuotaViewData> {
@@ -268,16 +349,50 @@ impl<'a> QuotaService<'a> {
             });
         }
 
-        // 2. If access token is empty or whitespace, fail fast
-        let access_token_trimmed = auth.access_token.trim();
-        if access_token_trimmed.is_empty() {
+        let mut access_token = auth.access_token.trim().to_string();
+        let mut refreshed_token_opt: Option<RefreshedToken> = None;
+
+        // 2. Proactive renewal (HAC-03):
+        // If token is missing or known to be expiring soon (<60s), and we have refresh_token + TokenRefreshPort:
+        if (access_token.is_empty() || auth.is_expiring_soon)
+            && let Some(ref rt) = auth.refresh_token
+            && let Some(refresh_port) = self.token_refresh
+            && let Ok(refreshed) = refresh_port.refresh_token(rt, auth.client_id.as_deref())
+        {
+            access_token = refreshed.access_token.trim().to_string();
+            let _ = self.persist_refreshed_tokens(&orbit_name, &refreshed);
+            refreshed_token_opt = Some(refreshed);
+        }
+
+        // Fail fast if access token is still empty
+        if access_token.is_empty() {
             return Err(OrbitError::CredentialValidation(
                 "Access token is missing or empty. Run `agy` to authenticate.".into(),
             ));
         }
 
         // 3. Fetch live quota
-        let fetch_res = self.quota_port.fetch_user_quota(access_token_trimmed);
+        let mut fetch_res = self.quota_port.fetch_user_quota(&access_token);
+
+        // 4. Reactive renewal (HAC-03):
+        // If fetch failed with 401 / expired, and we haven't refreshed yet, and we have refresh_token:
+        if let Err(OrbitError::CredentialValidation(msg)) = &fetch_res
+            && (msg.contains("invalid_grant")
+                || msg.contains("expired")
+                || msg.contains("HTTP 401")
+                || msg.contains("unauthorized"))
+            && refreshed_token_opt.is_none()
+            && let Some(ref rt) = auth.refresh_token
+            && let Some(refresh_port) = self.token_refresh
+            && let Ok(refreshed) = refresh_port.refresh_token(rt, auth.client_id.as_deref())
+        {
+            let new_at = refreshed.access_token.trim().to_string();
+            if !new_at.is_empty() {
+                let _ = self.persist_refreshed_tokens(&orbit_name, &refreshed);
+                // Retry fetch exactly once!
+                fetch_res = self.quota_port.fetch_user_quota(&new_at);
+            }
+        }
 
         match fetch_res {
             Ok(summary) => {

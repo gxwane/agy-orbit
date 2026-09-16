@@ -5,6 +5,7 @@ use crate::domain::orbit::{OrbitIndex, OrbitMetadata, OrbitName};
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
 use crate::ports::lease::{LeaseGuard, LeasePort};
+use crate::ports::oauth::{RefreshedToken, TokenRefreshPort};
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 use crate::ports::vault::VaultPort;
@@ -219,5 +220,61 @@ impl LeasePort for MockLeasePort {
 
     fn check_active_lease(&self) -> Result<Option<LeaseRecord>> {
         Ok(self.active_lease.lock().unwrap().clone())
+    }
+}
+
+/// Mock Token Refresh for in-memory testing.
+#[derive(Default, Clone)]
+pub struct MockTokenRefresh {
+    pub refresh_count: Arc<Mutex<usize>>,
+    pub return_token: Arc<Mutex<Option<RefreshedToken>>>,
+    pub return_error: Arc<Mutex<Option<String>>>,
+}
+
+impl MockTokenRefresh {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_success(token: RefreshedToken) -> Self {
+        Self {
+            refresh_count: Arc::new(Mutex::new(0)),
+            return_token: Arc::new(Mutex::new(Some(token))),
+            return_error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn with_error(error: OrbitError) -> Self {
+        Self {
+            refresh_count: Arc::new(Mutex::new(0)),
+            return_token: Arc::new(Mutex::new(None)),
+            return_error: Arc::new(Mutex::new(Some(error.to_string()))),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        *self.refresh_count.lock().unwrap()
+    }
+}
+
+impl TokenRefreshPort for MockTokenRefresh {
+    fn refresh_token(
+        &self,
+        _refresh_token: &str,
+        _client_id: Option<&str>,
+    ) -> Result<RefreshedToken> {
+        *self.refresh_count.lock().unwrap() += 1;
+        if let Some(ref msg) = *self.return_error.lock().unwrap() {
+            return Err(OrbitError::CredentialValidation(msg.clone()));
+        }
+        if let Some(ref token) = *self.return_token.lock().unwrap() {
+            return Ok(token.clone());
+        }
+        Ok(RefreshedToken {
+            access_token: "mock_refreshed_access_token_xyz1234567890".to_string(),
+            expires_in_secs: 3600,
+            refresh_token: None,
+            id_token: None,
+        })
     }
 }

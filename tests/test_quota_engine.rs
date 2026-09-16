@@ -9,7 +9,8 @@ use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::quota::FileQuotaCacheAdapter;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
 use agy_orbit::ports::KeyringPort;
-use agy_orbit::ports::mock::{MockKeyring, MockLeasePort};
+use agy_orbit::ports::mock::{MockKeyring, MockLeasePort, MockTokenRefresh};
+use agy_orbit::ports::oauth::RefreshedToken;
 use agy_orbit::ports::quota::{QuotaCachePort, QuotaPort};
 use chrono::{Duration, Utc};
 use common::sandbox::TestSandbox;
@@ -671,5 +672,142 @@ fn test_query_quota_401_cache_email_mismatch_isolated() {
     let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
     assert_eq!(mc_row.gemini_5h_pct, None);
     assert_eq!(mc_row.next_reset, None);
+    assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
+}
+
+#[test]
+fn test_quota_service_silent_auto_refresh_on_401() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // 1. Setup active orbit and inactive orbit 'mc' with expired token and valid refresh_token
+    let active_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"tok_active","token_type":"Bearer","refresh_token":"rf_active"}}"#;
+    keyring.set_secret(active_secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_orbit", None, false).unwrap();
+
+    let mc_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"tok_mc_expired","token_type":"Bearer","refresh_token":"1//valid_refresh_token_mc_12345"}}"#;
+    keyring.set_secret(mc_secret).unwrap();
+    snap_service.save("mc", None, false).unwrap();
+
+    // Switch active in keyring back to active_orbit
+    keyring.set_secret(active_secret).unwrap();
+
+    // 2. Mock QuotaPort that rejects 'tok_mc_expired' with 401, but accepts refreshed token
+    struct RefreshableQuotaPort;
+    impl QuotaPort for RefreshableQuotaPort {
+        fn fetch_user_quota(&self, token: &str) -> Result<QuotaSummary> {
+            if token == "tok_mc_expired" {
+                Err(OrbitError::CredentialValidation(
+                    "Access token expired or unauthorized (HTTP 401).".into(),
+                ))
+            } else if token == "new_refreshed_access_token_999" {
+                Ok(sample_quota_summary())
+            } else {
+                Err(OrbitError::CredentialValidation(format!(
+                    "Unexpected token: {token}"
+                )))
+            }
+        }
+    }
+
+    let cache_port = FileQuotaCacheAdapter;
+    let mock_refresh = MockTokenRefresh::with_success(RefreshedToken {
+        access_token: "new_refreshed_access_token_999".to_string(),
+        expires_in_secs: 3600,
+        refresh_token: Some("1//rotated_refresh_token_mc_67890".to_string()),
+        id_token: None,
+    });
+
+    let service = QuotaService::new(&target, &storage, &RefreshableQuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_token_refresh(&mock_refresh);
+
+    // 3. Query mc quota: should trigger reactive refresh on 401, update vault, and return live data
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("mc".into()),
+            refresh: false,
+        })
+        .unwrap();
+
+    assert!(!view_data.is_stale);
+    assert_eq!(mock_refresh.count(), 1);
+
+    // 4. In query_all_quotas, mc is NOT stale, but fresh and Ready!
+    let rows = service.query_all_quotas(false).unwrap();
+    let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
+    assert!(!mc_row.is_stale);
+    assert!(mc_row.gemini_5h_pct.is_some());
+    assert_eq!(mc_row.status, RowStatus::Throttled);
+}
+
+#[test]
+fn test_quota_service_silent_auto_refresh_invalid_grant_falls_back() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let active_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"tok_active","token_type":"Bearer","refresh_token":"rf_active"}}"#;
+    keyring.set_secret(active_secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_orbit", None, false).unwrap();
+
+    let mc_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"tok_mc_expired","token_type":"Bearer","refresh_token":"1//revoked_rt"}}"#;
+    keyring.set_secret(mc_secret).unwrap();
+    snap_service.save("mc", None, false).unwrap();
+    keyring.set_secret(active_secret).unwrap();
+
+    // Populate old cache
+    let cache_port = FileQuotaCacheAdapter;
+    let cached_summary = sample_quota_summary();
+    cache_port
+        .save_quota_cache(&QuotaCacheEntry {
+            orbit_name: "mc".into(),
+            account_email: Some("mc@example.com".into()),
+            cached_at: Utc::now() - Duration::minutes(10),
+            summary: cached_summary,
+        })
+        .unwrap();
+
+    struct Always401QuotaPort;
+    impl QuotaPort for Always401QuotaPort {
+        fn fetch_user_quota(&self, _token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::CredentialValidation(
+                "HTTP 401 unauthorized".into(),
+            ))
+        }
+    }
+
+    let mock_refresh = MockTokenRefresh::with_error(OrbitError::CredentialValidation(
+        "OAuth refresh token expired or revoked (invalid_grant)".into(),
+    ));
+
+    let service = QuotaService::new(&target, &storage, &Always401QuotaPort, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_token_refresh(&mock_refresh);
+
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("mc".into()),
+            refresh: false,
+        })
+        .unwrap();
+
+    assert!(view_data.is_stale);
+    assert_eq!(view_data.stale_reason, Some(StaleReason::TokenExpired));
+
+    let rows = service.query_all_quotas(false).unwrap();
+    let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
+    assert!(mc_row.is_stale);
     assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
 }

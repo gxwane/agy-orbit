@@ -11,6 +11,7 @@ use agy_orbit::error::Result;
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
+use agy_orbit::infra::oauth::GoogleOAuthAdapter;
 use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
 use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
 use agy_orbit::infra::upgrade::{GitHubReleaseAdapter, LocalBinaryReplacer};
@@ -145,10 +146,12 @@ fn run_app() -> Result<()> {
         Some(Commands::Quota { name, refresh, all }) => {
             let quota_port = CloudCodeQuotaAdapter::new();
             let cache_port = FileQuotaCacheAdapter;
+            let oauth_adapter = GoogleOAuthAdapter::new();
             let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
                 .with_keyring(&keyring)
                 .with_vault(vault.as_ref())
-                .with_lease(&lease);
+                .with_lease(&lease)
+                .with_token_refresh(&oauth_adapter);
 
             if all {
                 let rows = service.query_all_quotas(refresh)?;

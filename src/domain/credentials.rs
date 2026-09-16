@@ -207,6 +207,27 @@ pub fn decode_base64_url(input: &str) -> Option<Vec<u8>> {
 struct JwtClaims {
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    aud: Option<String>,
+}
+
+/// Safely extract the aud (client_id) claim from a Google OAuth JWT ID token.
+pub fn extract_aud_from_jwt(id_token: &str) -> Option<String> {
+    if id_token.is_empty() || id_token.len() > MAX_JWT_LEN {
+        return None;
+    }
+    let mut parts = id_token.split('.');
+    let _header = parts.next()?;
+    let payload_b64 = parts.next()?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let decoded = decode_base64_url(payload_b64)?;
+    let claims: JwtClaims = serde_json::from_slice(&decoded).ok()?;
+    let aud = claims.aud?.trim().to_string();
+    if !aud.is_empty() { Some(aud) } else { None }
 }
 
 /// Safely extract the verified email from a Google OAuth JWT ID token.
@@ -239,6 +260,9 @@ pub struct ResolvedIdentity {
     pub access_token: String,
     pub email: Option<String>,
     pub refresh_token: Option<String>,
+    pub id_token: Option<String>,
+    pub client_id: Option<String>,
+    pub expires_at_ms: Option<i64>,
 }
 
 impl std::fmt::Debug for ResolvedIdentity {
@@ -250,7 +274,33 @@ impl std::fmt::Debug for ResolvedIdentity {
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("client_id", &self.client_id)
+            .field("expires_at_ms", &self.expires_at_ms)
             .finish()
+    }
+}
+
+impl ResolvedIdentity {
+    /// Check if the token is already expired or will expire within safety_margin_secs.
+    pub fn is_expiring_soon(&self, safety_margin_secs: u64) -> bool {
+        if let Some(exp_ms) = self.expires_at_ms {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            now_ms + (safety_margin_secs as i64 * 1000) >= exp_ms
+        } else {
+            false
+        }
+    }
+}
+
+fn parse_expiry_to_ms(exp_str: &str) -> Option<i64> {
+    let trimmed = exp_str.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+        Some(dt.timestamp_millis())
+    } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(trimmed, "%m/%d/%Y %H:%M:%S") {
+        Some(dt.and_utc().timestamp_millis())
+    } else {
+        None
     }
 }
 
@@ -275,10 +325,15 @@ pub fn resolve_credentials(
                         .as_deref()
                         .and_then(extract_email_from_jwt)
                         .or_else(|| accounts_bytes.and_then(extract_active_email));
+                    let client_id = payload.id_token.as_deref().and_then(extract_aud_from_jwt);
+                    let expires_at_ms = token.expiry.as_deref().and_then(parse_expiry_to_ms);
                     return Some(ResolvedIdentity {
                         access_token: at,
                         email,
                         refresh_token: token.refresh_token,
+                        id_token: payload.id_token,
+                        client_id,
+                        expires_at_ms,
                     });
                 }
             }
@@ -291,10 +346,14 @@ pub fn resolve_credentials(
                         .as_deref()
                         .and_then(extract_email_from_jwt)
                         .or_else(|| accounts_bytes.and_then(extract_active_email));
+                    let client_id = oauth.id_token.as_deref().and_then(extract_aud_from_jwt);
                     return Some(ResolvedIdentity {
                         access_token: at,
                         email,
                         refresh_token: oauth.refresh_token,
+                        id_token: oauth.id_token,
+                        client_id,
+                        expires_at_ms: oauth.expiry_date,
                     });
                 }
             }
@@ -312,10 +371,14 @@ pub fn resolve_credentials(
                 .as_deref()
                 .and_then(extract_email_from_jwt)
                 .or_else(|| accounts_bytes.and_then(extract_active_email));
+            let client_id = oauth.id_token.as_deref().and_then(extract_aud_from_jwt);
             return Some(ResolvedIdentity {
                 access_token: at,
                 email,
                 refresh_token: oauth.refresh_token,
+                id_token: oauth.id_token,
+                client_id,
+                expires_at_ms: oauth.expiry_date,
             });
         }
     }
