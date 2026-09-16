@@ -3,32 +3,37 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-
-    // Target-gate: only compile PE resource when target OS is Windows
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        compile_windows_pe_resources();
-    }
+    compile_windows_pe_resources();
 }
 
+#[cfg(windows)]
 fn compile_windows_pe_resources() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
     let mut res = winres::WindowsResource::new();
 
     let version = env!("CARGO_PKG_VERSION");
     let desc = env!("CARGO_PKG_DESCRIPTION");
     let authors = env!("CARGO_PKG_AUTHORS");
 
+    let major = env!("CARGO_PKG_VERSION_MAJOR");
+    let minor = env!("CARGO_PKG_VERSION_MINOR");
+    let patch = env!("CARGO_PKG_VERSION_PATCH");
+    let pe_manifest_version = format!("{major}.{minor}.{patch}.0");
+
     res.set("FileDescription", desc);
     res.set("ProductName", "agy-orbit");
     res.set("OriginalFilename", "agyo.exe");
-    res.set("LegalCopyright", &format!("Copyright (c) 2026 {}", authors));
+    res.set("LegalCopyright", &format!("Copyright (c) 2026 {authors}"));
     res.set("ProductVersion", version);
     res.set("FileVersion", version);
 
-    res.set_manifest(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    const MANIFEST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
     <assemblyIdentity
-        version="0.1.0.0"
+        version="__MANIFEST_VERSION__"
         processorArchitecture="*"
         name="GXWane.AgyOrbit.agyo"
         type="win32"
@@ -47,13 +52,15 @@ fn compile_windows_pe_resources() {
         </application>
     </compatibility>
 </assembly>
-"#,
-    );
+"#;
+
+    let manifest_content = MANIFEST_TEMPLATE.replace("__MANIFEST_VERSION__", &pe_manifest_version);
+    res.set_manifest(&manifest_content);
 
     if let Err(e) = res.compile() {
-        eprintln!(
-            "cargo:warning=[agy-orbit] Failed to embed Windows PE resource: {}",
-            e
-        );
+        eprintln!("cargo:warning=[agy-orbit] Failed to embed Windows PE resource: {e}");
     }
 }
+
+#[cfg(not(windows))]
+fn compile_windows_pe_resources() {}
