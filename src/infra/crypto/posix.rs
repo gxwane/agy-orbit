@@ -89,12 +89,8 @@ impl PosixVault {
 
         // Generate new 32-byte seed using CSPRNG
         let mut new_seed = [0u8; 32];
-        if getrandom::getrandom(&mut new_seed).is_err() {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(42);
-            new_seed[..16].copy_from_slice(&nanos.to_le_bytes());
+        if let Err(e) = getrandom::getrandom(&mut new_seed) {
+            panic!("Cryptographic failure: system CSPRNG unavailable: {e}");
         }
 
         let _ = std::fs::create_dir_all(&seed_dir);

@@ -265,21 +265,26 @@ pub fn remove_guarded_directory(dir: &Path) -> Result<()> {
     }
 
     let file_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let is_safe_name = file_name == ".agyo"
+
+    // Global top-level directories explicitly dedicated to agyo
+    let is_top_level_safe = file_name == ".agyo"
         || file_name == "agy-orbit"
         || file_name == "agy-orbit-run"
-        || file_name.starts_with("agyo-run-")
-        || file_name == "cache"
-        || file_name == "orbits"
-        || file_name == "bin";
+        || file_name.starts_with("agyo-run-");
 
+    // Subdirectories are only safe when strictly located inside ~/.agyo
     let is_inside_agyo = if let Ok(agyo_dir) = get_agyo_dir() {
         dir.starts_with(&agyo_dir)
+            && (file_name == "cache"
+                || file_name == "orbits"
+                || file_name == "bin"
+                || file_name == ".agyo"
+                || dir == agyo_dir)
     } else {
         false
     };
 
-    if !is_safe_name && !is_inside_agyo {
+    if !is_top_level_safe && !is_inside_agyo {
         return Err(OrbitError::SecurityViolation(format!(
             "Target path '{dir:?}' does not match safe directory naming rules"
         )));
@@ -378,5 +383,13 @@ mod tests {
         assert!(temp_agyo.exists());
         assert!(remove_guarded_directory(&temp_agyo).is_ok());
         assert!(!temp_agyo.exists());
+
+        // 7. Reject generic name 'bin' or 'cache' outside agyo_dir
+        let temp_parent = std::env::temp_dir().join("some_parent_test_guard");
+        let temp_bin = temp_parent.join("bin");
+        std::fs::create_dir_all(&temp_bin).unwrap();
+        let result_bin = remove_guarded_directory(&temp_bin);
+        let _ = std::fs::remove_dir_all(&temp_parent);
+        assert!(matches!(result_bin, Err(OrbitError::SecurityViolation(_))));
     }
 }

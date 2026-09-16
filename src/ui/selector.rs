@@ -12,6 +12,18 @@ pub fn install_terminal_panic_hook() {
             crossterm::cursor::Show,
             crossterm::style::ResetColor
         );
+        eprintln!();
+        eprintln!("============================================================");
+        eprintln!("💥 agy-orbit encountered an unexpected crash!");
+        eprintln!(
+            "Version: v{} | OS: {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        );
+        eprintln!("Please report this issue at:");
+        eprintln!("👉 https://github.com/gxwane/agy-orbit/issues/new");
+        eprintln!("============================================================");
+        eprintln!();
         default_hook(panic_info);
     }));
 }

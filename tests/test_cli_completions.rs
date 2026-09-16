@@ -53,12 +53,15 @@ fn test_cli_completions_all_shells() {
     assert!(stdout.contains("Register-ArgumentCompleter"));
     assert!(stdout.contains("__complete-orbits"));
 
-    // Verify 'completions' is removed and cleanly rejected
+    // Verify alias 'completions' works identically
     let output = Command::new(&bin)
         .args(["completions", "powershell"])
         .output()
-        .expect("Failed to execute agyo completions");
-    assert!(!output.status.success());
+        .expect("Failed to execute agyo completions powershell");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Register-ArgumentCompleter"));
+    assert!(stdout.contains("__complete-orbits"));
 
     // Verify pipe/non-tty auto-detection when no shell is passed
     let output = Command::new(&bin)

@@ -107,7 +107,8 @@ impl<'a> UpgradeService<'a> {
 
         // 5. Match expected archive and checksum assets
         let expected_archive = triple.expected_archive_name();
-        let expected_checksum = triple.expected_checksum_name();
+        let expected_checksum_primary = triple.expected_checksum_name();
+        let expected_checksum_fallback = format!("{expected_archive}.sha256");
 
         let archive_asset = release
             .assets
@@ -123,10 +124,10 @@ impl<'a> UpgradeService<'a> {
         let checksum_asset = release
             .assets
             .iter()
-            .find(|a| a.name == expected_checksum)
+            .find(|a| a.name == expected_checksum_primary || a.name == expected_checksum_fallback)
             .ok_or_else(|| {
                 OrbitError::Upgrade(format!(
-                    "Release {} does not contain expected checksum '{expected_checksum}'",
+                    "Release {} does not contain expected checksum ('{expected_checksum_primary}' or '{expected_checksum_fallback}')",
                     release.tag_name
                 ))
             })?;
@@ -136,7 +137,8 @@ impl<'a> UpgradeService<'a> {
         let checksum_text = String::from_utf8_lossy(&checksum_bytes);
         let expected_sha256 = Sha256Verifier::parse_checksum(&checksum_text).ok_or_else(|| {
             OrbitError::SecurityViolation(format!(
-                "Invalid SHA-256 checksum format in '{expected_checksum}'"
+                "Invalid SHA-256 checksum format in '{}'",
+                checksum_asset.name
             ))
         })?;
 

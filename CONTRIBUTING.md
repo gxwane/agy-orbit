@@ -21,7 +21,7 @@ When contributing, you **must never violate** our core invariants:
 
 ## 2. Development Workflow
 
-1. Fork the repository and create your branch from `main`:
+1. Fork the repository and create your branch from `master`:
    ```bash
    git checkout -b feat/your-feature-name
    ```

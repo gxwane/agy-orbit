@@ -369,3 +369,67 @@ fn test_upgrade_preflight_probe_failure_fails_fast() {
         _ => panic!("Expected Upgrade permission error, got {err:?}"),
     }
 }
+
+#[test]
+fn test_upgrade_happy_path_with_archive_ext_checksum_name() {
+    let triple = TargetTriple::current().unwrap();
+    let archive_name = triple.expected_archive_name();
+    let checksum_name = format!("{archive_name}.sha256"); // e.g. agyo-<triple>.zip.sha256
+
+    let expected_installed = b"mock-v9.9.9-binary-contents";
+    let zip_bytes = create_test_zip(triple.binary_name(), expected_installed);
+
+    let mut hasher = Sha256::new();
+    hasher.update(&zip_bytes);
+    let hash_hex = hex::encode(hasher.finalize());
+    let checksum_file_content = format!("{hash_hex}  {archive_name}\n").into_bytes();
+
+    let archive_url = "https://github.com/gxwane/agy-orbit/releases/download/v9.9.9/archive";
+    let checksum_url = "https://github.com/gxwane/agy-orbit/releases/download/v9.9.9/checksum";
+
+    let mut provider = MockReleaseProvider::new();
+    provider.add_release(ReleaseInfo {
+        tag_name: "v9.9.9".into(),
+        version: SemVer::parse("v9.9.9").unwrap(),
+        prerelease: false,
+        published_at: None,
+        html_url: "".into(),
+        body: None,
+        assets: vec![
+            ReleaseAsset {
+                name: archive_name,
+                download_url: archive_url.into(),
+                size: zip_bytes.len() as u64,
+            },
+            ReleaseAsset {
+                name: checksum_name,
+                download_url: checksum_url.into(),
+                size: checksum_file_content.len() as u64,
+            },
+        ],
+    });
+    provider.add_asset(archive_url, zip_bytes);
+    provider.add_asset(checksum_url, checksum_file_content);
+
+    let replacer = MockBinaryReplacer::new();
+    let service = UpgradeService::new(&provider, &replacer);
+
+    let res = service.execute_upgrade(UpgradeOptions::default()).unwrap();
+
+    match res {
+        UpgradeResult::Upgraded {
+            old_version,
+            new_version,
+            ..
+        } => {
+            assert_eq!(old_version.to_string(), env!("CARGO_PKG_VERSION"));
+            assert_eq!(new_version.to_string(), "9.9.9");
+        }
+        _ => panic!("Expected Upgraded, got {res:?}"),
+    }
+
+    assert_eq!(
+        replacer.installed_bytes.lock().unwrap().as_deref(),
+        Some(expected_installed.as_slice())
+    );
+}

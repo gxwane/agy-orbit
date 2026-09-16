@@ -166,7 +166,7 @@ Register-ArgumentCompleter -Native -CommandName 'agyo' -ScriptBlock {{
     $elements = $commandAst.CommandElements
     if ($elements.Count -ge 2) {{
         $sub = $elements[1].Value
-        if ($sub -in @('use', 'u', 'sw', 'remove', 'rm', 'quota', 'q', 'run', 'r')) {{
+        if ($sub -in @('use', 'switch', 'u', 'sw', 'remove', 'rm', 'quota', 'q', 'run', 'r')) {{
             if ($elements.Count -eq 2 -or ($elements.Count -eq 3 -and $cursorPosition -ge $elements[1].Extent.EndOffset)) {{
                 $orbits = agyo __complete-orbits 2>$null
                 $orbits | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
@@ -189,7 +189,7 @@ _agyo_complete_wrapper() {{
     _init_completion || return
     local sub="${{words[1]}}"
     case "$sub" in
-        use|u|sw|remove|rm|quota|q|run|r)
+        use|switch|u|sw|remove|rm|quota|q|run|r)
             if [ "$cword" -eq 2 ]; then
                 local orbits=$(agyo __complete-orbits 2>/dev/null)
                 COMPREPLY=( $(compgen -W "$orbits" -- "$cur") )
@@ -213,7 +213,7 @@ _agyo_zsh_wrapper() {{
     words=(${{(z)BUFFER}})
     if (( ${{#words}} >= 2 )); then
         case "${{words[2]}}" in
-            use|u|sw|remove|rm|quota|q|run|r)
+            use|switch|u|sw|remove|rm|quota|q|run|r)
                 if (( CURRENT == 2 || (CURRENT == 3 && ${{#words}} <= 3) )); then
                     local -a orbits
                     orbits=(${{(f)"$(agyo __complete-orbits 2>/dev/null)"}})
@@ -234,7 +234,7 @@ compdef _agyo_zsh_wrapper agyo
                 out,
                 r#"
 # agyo dynamic orbit argument completer
-complete -c agyo -n '__fish_seen_subcommand_from use u sw remove rm quota q run r' -f -a '(agyo __complete-orbits 2>/dev/null)'
+complete -c agyo -n '__fish_seen_subcommand_from use switch u sw remove rm quota q run r' -f -a '(agyo __complete-orbits 2>/dev/null)'
 "#
             )?;
         }

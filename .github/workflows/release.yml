@@ -53,5 +53,5 @@ jobs:
           tar: unix
           zip: windows
           checksum: sha256
-          include: README.md, LICENSE, scripts/uninstall.ps1, scripts/uninstall.sh
+          include: README.md, README_zh.md, LICENSE, scripts/uninstall.ps1, scripts/uninstall.sh
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -36,8 +36,7 @@ pub enum Commands {
 
     /// Switch globally to the specified Orbit
     #[command(
-        alias = "switch",
-        visible_aliases = ["u", "sw"],
+        visible_aliases = ["switch", "sw", "u"],
         long_about = "Atomically update global Antigravity credentials and system keyring target to the specified Orbit using crash-resilient WAL state machine."
     )]
     Use {
@@ -112,7 +111,7 @@ pub enum Commands {
 
     /// Generate shell completion scripts
     #[command(
-        visible_alias = "comp",
+        visible_aliases = ["completions", "comp"],
         long_about = "Generate dynamic & static shell completion scripts for Bash, Zsh, Fish, PowerShell, or Elvish.\n\
                       Automatically detects your current shell environment when omitted in an interactive terminal."
     )]

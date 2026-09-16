@@ -16,7 +16,6 @@ exclude = [
     "/.github",
     "/scripts",
     "/docs",
-    "tests/**",
 ]
 
 [lib]
