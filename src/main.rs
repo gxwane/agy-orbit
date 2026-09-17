@@ -3,10 +3,11 @@ use colored::Colorize;
 
 use agy_orbit::app::{
     DoctorService, QueryService, QuotaQueryOptions, QuotaService, RecoveryService, RunOptions,
-    RunService, SnapshotService, SwitchService, UninstallOptions, UninstallService, UpgradeOptions,
-    UpgradeService,
+    RunService, SnapshotService, SwitchService, UninstallOptions, UninstallService,
+    UpdateCheckService, UpgradeOptions, UpgradeService,
 };
 use agy_orbit::cli::{Cli, Commands};
+use agy_orbit::domain::SemVer;
 use agy_orbit::error::Result;
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::keyring::OsKeyring;
@@ -14,17 +15,20 @@ use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::oauth::GoogleOAuthAdapter;
 use agy_orbit::infra::probe::UreqProbeAdapter;
 use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
-use agy_orbit::infra::storage::{FileStorage, MigrationService, TargetAdapter};
+use agy_orbit::infra::storage::{
+    FileStorage, FileUpdateCacheAdapter, MigrationService, TargetAdapter,
+};
 use agy_orbit::infra::upgrade::{GitHubReleaseAdapter, LocalBinaryReplacer};
 use agy_orbit::ports::{BinaryReplacerPort, NetworkProbePort, StoragePort};
 use agy_orbit::ui::{
     detect_current_shell, emit_completion_script, init_terminal_colors,
     install_terminal_panic_hook, is_interactive, render_completion_guide, render_doctor_report,
     render_multi_quota_table, render_orbits_table, render_quota_tip_if_multiple, render_quota_view,
-    render_success, render_uninstall_result, render_upgrade_result, render_whoami,
-    select_orbit_interactive,
+    render_success, render_uninstall_result, render_update_hint, render_upgrade_result,
+    render_whoami, select_orbit_interactive, should_enable_startup_update_check,
 };
 use std::io::IsTerminal;
+use std::sync::Arc;
 
 fn main() {
     // 0. Install panic hook and initialize console colors
@@ -98,8 +102,33 @@ fn run_app() -> Result<()> {
         let _ = replacer.cleanup_old_binary();
     }
 
-    // 5. Dispatch commands to Application Services
-    match cli.command {
+    // 5. Non-blocking Startup Update Check (only active for interactive whitelist commands)
+    let cached_notice = if should_enable_startup_update_check(&cli.command) {
+        let cache_adapter = Arc::new(FileUpdateCacheAdapter);
+        let update_check_svc = UpdateCheckService::new(cache_adapter.as_ref());
+        let current_ver = SemVer::parse(env!("CARGO_PKG_VERSION")).unwrap_or(SemVer {
+            major: 0,
+            minor: 0,
+            patch: 0,
+            prerelease: None,
+        });
+
+        let notice = update_check_svc.get_cached_update_notice(&current_ver);
+
+        let probe_provider = Arc::new(GitHubReleaseAdapter::new_micro_probe());
+        let _ = update_check_svc.check_and_spawn_background_update(
+            &current_ver,
+            cache_adapter.clone(),
+            probe_provider,
+        );
+
+        notice
+    } else {
+        None
+    };
+
+    // 6. Dispatch commands to Application Services
+    let res = match cli.command {
         Some(Commands::Save { name, label, force }) => {
             let service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
             let meta = service.save(&name, label, force)?;
@@ -379,5 +408,14 @@ fn run_app() -> Result<()> {
                 Ok(())
             }
         }
+    };
+
+    // 7. Render non-blocking update hint if a newer version is known and command succeeded
+    if res.is_ok()
+        && let Some((latest_ver, ref html_url)) = cached_notice
+    {
+        render_update_hint(&latest_ver, html_url);
     }
+
+    res
 }

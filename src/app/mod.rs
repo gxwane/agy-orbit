@@ -19,4 +19,4 @@ pub use runner::{RunOptions, RunService};
 pub use snapshot::SnapshotService;
 pub use switch::SwitchService;
 pub use uninstall::{UninstallOptions, UninstallPlan, UninstallResult, UninstallService};
-pub use upgrade::{UpgradeOptions, UpgradeResult, UpgradeService};
+pub use upgrade::{UpdateCheckService, UpgradeOptions, UpgradeResult, UpgradeService};

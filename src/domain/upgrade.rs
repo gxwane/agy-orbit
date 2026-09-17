@@ -1,7 +1,9 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// Parsed semantic version adhering to SemVer 2.0.0.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemVer {
     pub major: u32,
     pub minor: u32,
@@ -182,6 +184,31 @@ impl Sha256Verifier {
     }
 }
 
+/// Persisted cache record for startup update checks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateCheckCache {
+    /// UTC timestamp of the last executed check (or optimistic reservation).
+    pub last_checked_at: DateTime<Utc>,
+    /// Latest remote version recorded by the check.
+    pub latest_version: SemVer,
+    /// Release HTML web URL.
+    pub html_url: String,
+}
+
+impl UpdateCheckCache {
+    /// Check if the cached timestamp has exceeded the given cooldown in hours,
+    /// or if the local clock jumped backward into the past.
+    pub fn is_expired(&self, cooldown_hours: i64) -> bool {
+        let elapsed = Utc::now().signed_duration_since(self.last_checked_at);
+        elapsed.num_hours() >= cooldown_hours || elapsed.num_seconds() < 0
+    }
+
+    /// Determine if the cached remote version is strictly newer than the currently running version.
+    pub fn has_newer_version(&self, current: &SemVer) -> bool {
+        self.latest_version.is_newer_than(current)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +270,42 @@ mod tests {
 
         // Invalid checksum format
         assert!(Sha256Verifier::parse_checksum("not_a_valid_hash").is_none());
+    }
+
+    #[test]
+    fn test_update_check_cache_expiry_and_versioning() {
+        let now = Utc::now();
+        let cache = UpdateCheckCache {
+            last_checked_at: now,
+            latest_version: SemVer::parse("v0.3.0").unwrap(),
+            html_url: "https://github.com/gxwane/agy-orbit/releases/tag/v0.3.0".into(),
+        };
+
+        // Brand-new cache is not expired after 24h
+        assert!(!cache.is_expired(24));
+
+        // 25 hours in the past is expired
+        let past = now - chrono::Duration::hours(25);
+        let expired_cache = UpdateCheckCache {
+            last_checked_at: past,
+            latest_version: SemVer::parse("v0.3.0").unwrap(),
+            html_url: "https://github.com/gxwane/agy-orbit/releases/tag/v0.3.0".into(),
+        };
+        assert!(expired_cache.is_expired(24));
+
+        let current = SemVer::parse("v0.2.1").unwrap();
+        assert!(cache.has_newer_version(&current));
+
+        let future = SemVer::parse("v0.4.0").unwrap();
+        assert!(!cache.has_newer_version(&future));
+
+        // Clock rollback defense: future timestamp should be treated as expired
+        let future_time = now + chrono::Duration::hours(5);
+        let clock_skew_cache = UpdateCheckCache {
+            last_checked_at: future_time,
+            latest_version: SemVer::parse("v0.3.0").unwrap(),
+            html_url: "".into(),
+        };
+        assert!(clock_skew_cache.is_expired(24));
     }
 }

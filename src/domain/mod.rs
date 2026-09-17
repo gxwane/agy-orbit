@@ -17,4 +17,6 @@ pub use orbit::{
     ActiveState, OrbitIndex, OrbitMetadata, OrbitName, OrbitRecord, resolve_active_state,
 };
 pub use quota::{QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary};
-pub use upgrade::{ReleaseAsset, ReleaseInfo, SemVer, Sha256Verifier, TargetTriple};
+pub use upgrade::{
+    ReleaseAsset, ReleaseInfo, SemVer, Sha256Verifier, TargetTriple, UpdateCheckCache,
+};

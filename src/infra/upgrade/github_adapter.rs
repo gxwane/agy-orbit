@@ -30,26 +30,49 @@ struct GithubReleaseDto {
 /// GitHub Releases API and asset download adapter.
 pub struct GitHubReleaseAdapter {
     repo_url: String,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl Default for GitHubReleaseAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GitHubReleaseAdapter {
     pub fn new() -> Self {
         Self {
             repo_url: GITHUB_REPO_RELEASES_URL.to_string(),
+            connect_timeout: Duration::from_secs(5),
+            read_timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// Construct a lightweight, sub-second timeout probe adapter for non-blocking startup checks.
+    pub fn new_micro_probe() -> Self {
+        Self {
+            repo_url: GITHUB_REPO_RELEASES_URL.to_string(),
+            connect_timeout: Duration::from_millis(800),
+            read_timeout: Duration::from_millis(1200),
         }
     }
 
     #[cfg(test)]
     pub fn with_repo_url(repo_url: String) -> Self {
-        Self { repo_url }
+        Self {
+            repo_url,
+            connect_timeout: Duration::from_secs(5),
+            read_timeout: Duration::from_secs(30),
+        }
     }
 
-    /// Build a secure `ureq::Agent` with strict timeouts and disabled automatic redirects
+    /// Build a secure `ureq::Agent` with configured timeouts and disabled automatic redirects
     /// so each redirect destination URL can be explicitly validated against allowed hosts.
-    fn build_agent() -> ureq::Agent {
+    fn build_agent(&self) -> ureq::Agent {
         ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(5))
-            .timeout_read(Duration::from_secs(30))
+            .timeout_connect(self.connect_timeout)
+            .timeout_read(self.read_timeout)
             .redirects(0)
             .build()
     }
@@ -96,16 +119,10 @@ impl GitHubReleaseAdapter {
     }
 }
 
-impl Default for GitHubReleaseAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ReleaseProviderPort for GitHubReleaseAdapter {
     fn fetch_latest_release(&self, include_prereleases: bool) -> Result<ReleaseInfo> {
         Self::validate_url(&self.repo_url)?;
-        let agent = Self::build_agent();
+        let agent = self.build_agent();
 
         let mut req = agent
             .get(&self.repo_url)
@@ -177,7 +194,7 @@ impl ReleaseProviderPort for GitHubReleaseAdapter {
     }
 
     fn download_asset(&self, initial_url: &str) -> Result<Vec<u8>> {
-        let agent = Self::build_agent();
+        let agent = self.build_agent();
         let mut current_url = initial_url.to_string();
         let mut redirect_count = 0;
 

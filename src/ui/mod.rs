@@ -16,4 +16,7 @@ pub use quota_view::{render_multi_quota_table, render_quota_tip_if_multiple, ren
 pub use selector::{install_terminal_panic_hook, is_interactive, select_orbit_interactive};
 pub use table_view::render_orbits_table;
 pub use uninstall_view::{render_uninstall_plan, render_uninstall_result};
-pub use upgrade_view::render_upgrade_result;
+pub use upgrade_view::{
+    render_update_hint, render_upgrade_result, should_enable_startup_update_check,
+    should_enable_startup_update_check_internal,
+};

@@ -17,5 +17,5 @@ pub use probe::{EndpointProbeResult, NetworkProbePort, ProxyConfig};
 pub use quota::{QuotaCachePort, QuotaPort};
 pub use storage::StoragePort;
 pub use target::TargetPort;
-pub use upgrade::{BinaryReplacerPort, ReleaseProviderPort};
+pub use upgrade::{BinaryReplacerPort, ReleaseProviderPort, UpdateCachePort};
 pub use vault::VaultPort;

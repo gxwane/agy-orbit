@@ -1,4 +1,7 @@
 use crate::app::UpgradeResult;
+use crate::cli::Commands;
+use crate::domain::upgrade::SemVer;
+use crate::ui::selector::is_interactive;
 use colored::Colorize;
 use std::path::Path;
 
@@ -91,5 +94,115 @@ pub fn render_upgrade_result(result: &UpgradeResult, exe_path: Option<&Path>) {
                 }
             }
         }
+    }
+}
+
+/// Determine whether startup update check probe and display should be triggered.
+///
+/// Guardrails:
+/// 1. Interactive terminal required (bypasses non-TTY, pipes, and CI).
+/// 2. Escape hatch: `AGYO_NO_UPDATE_CHECK=1` or `CI=true` disables checks.
+/// 3. Whitelist: Only active for interactive root TUI (`None`), `whoami`, and online `doctor`.
+pub fn should_enable_startup_update_check(cmd: &Option<Commands>) -> bool {
+    should_enable_startup_update_check_internal(cmd, is_interactive())
+}
+
+/// Internal testable implementation with explicit terminal interactivity flag.
+pub fn should_enable_startup_update_check_internal(
+    cmd: &Option<Commands>,
+    interactive: bool,
+) -> bool {
+    // Guard 1: Must be in an interactive terminal
+    if !interactive {
+        return false;
+    }
+
+    // Guard 2: Respect environment variable escape hatches
+    if std::env::var("AGYO_NO_UPDATE_CHECK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if std::env::var("CI")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Guard 3: Command whitelist
+    matches!(
+        cmd,
+        None | Some(Commands::Whoami) | Some(Commands::Doctor { offline: false })
+    )
+}
+
+/// Render a gentle, non-blocking single-line update notification at the bottom of the output.
+pub fn render_update_hint(latest_version: &SemVer, html_url: &str) {
+    println!();
+    println!(
+        "{} Update available: v{} -> v{}. Run '{}' to upgrade.",
+        "💡".yellow(),
+        env!("CARGO_PKG_VERSION").dimmed(),
+        latest_version.to_string().green().bold(),
+        "agyo upgrade".cyan().bold()
+    );
+    if !html_url.is_empty() {
+        println!("   {}", html_url.dimmed());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_cargo_installation() {
+        let cargo_bin = Path::new("C:\\Users\\user\\.cargo\\bin\\agyo.exe");
+        let local_bin = Path::new("C:\\Users\\user\\.agyo\\bin\\agyo.exe");
+
+        assert!(is_cargo_installation(cargo_bin));
+        assert!(!is_cargo_installation(local_bin));
+    }
+
+    #[test]
+    fn test_should_enable_startup_update_check_command_filtering() {
+        // When not interactive (default in tests), always returns false
+        assert!(!should_enable_startup_update_check(&None));
+        assert!(!should_enable_startup_update_check(&Some(Commands::Whoami)));
+        assert!(!should_enable_startup_update_check(&Some(
+            Commands::Doctor { offline: false }
+        )));
+        assert!(!should_enable_startup_update_check(&Some(
+            Commands::Doctor { offline: true }
+        )));
+        assert!(!should_enable_startup_update_check(&Some(Commands::List)));
+        assert!(!should_enable_startup_update_check(&Some(
+            Commands::CompleteOrbits
+        )));
+
+        // When explicitly interactive: whitelist commands return true, non-whitelisted return false
+        assert!(should_enable_startup_update_check_internal(&None, true));
+        assert!(should_enable_startup_update_check_internal(
+            &Some(Commands::Whoami),
+            true
+        ));
+        assert!(should_enable_startup_update_check_internal(
+            &Some(Commands::Doctor { offline: false }),
+            true
+        ));
+        assert!(!should_enable_startup_update_check_internal(
+            &Some(Commands::Doctor { offline: true }),
+            true
+        ));
+        assert!(!should_enable_startup_update_check_internal(
+            &Some(Commands::List),
+            true
+        ));
+        assert!(!should_enable_startup_update_check_internal(
+            &Some(Commands::CompleteOrbits),
+            true
+        ));
     }
 }

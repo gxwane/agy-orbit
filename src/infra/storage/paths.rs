@@ -220,6 +220,11 @@ pub fn get_quota_cache_path(name: &str) -> Result<PathBuf> {
     Ok(get_cache_dir()?.join(format!("quota_{name}.json")))
 }
 
+/// Resolve the path to the startup update check cache file (~/.agyo/cache/update_check.json).
+pub fn get_update_check_cache_path() -> Result<PathBuf> {
+    Ok(get_cache_dir()?.join("update_check.json"))
+}
+
 /// Remove a directory with strict security guardrails against catastrophic path deletion.
 ///
 /// Guardrails:

@@ -1,6 +1,15 @@
-use crate::domain::upgrade::{ReleaseInfo, TargetTriple};
+use crate::domain::upgrade::{ReleaseInfo, TargetTriple, UpdateCheckCache};
 use crate::error::Result;
 use std::path::PathBuf;
+
+/// Port for reading and persisting startup update check timestamps and cache.
+pub trait UpdateCachePort: Send + Sync {
+    /// Load existing update check cache from storage.
+    fn load_cache(&self) -> Result<Option<UpdateCheckCache>>;
+
+    /// Atomically persist update check cache to storage.
+    fn save_cache(&self, cache: &UpdateCheckCache) -> Result<()>;
+}
 
 /// Port for querying releases and downloading binary assets from a remote provider.
 pub trait ReleaseProviderPort: Send + Sync {
