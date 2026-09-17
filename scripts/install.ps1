@@ -30,7 +30,7 @@ if ($FromSource) {
     }
     cargo install --path . --force
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "`n✓ agyo has been successfully installed to Cargo bin directory!" -ForegroundColor Green
+        Write-Host "`n[OK] agyo has been successfully installed to Cargo bin directory!" -ForegroundColor Green
         Write-Host "Run 'agyo --help' to get started.`n" -ForegroundColor Cyan
         exit 0
     } else {
@@ -79,7 +79,7 @@ try {
         }
         Invoke-WebRequest -Uri $assetUrl -OutFile $archivePath -UseBasicParsing
     } catch {
-        Write-Host "`n❌ Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "`n[FAIL] Download failed: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host "Please check your network connection or verify that release version '$Version' exists." -ForegroundColor Yellow
         Write-Host "You can also install from source: cargo install agy-orbit`n" -ForegroundColor Gray
         exit 1
@@ -94,7 +94,7 @@ try {
         Write-Error "SHA-256 verification failed!`nExpected: $expectedHash`nActual:   $actualHash`nDownloaded asset may be corrupted or compromised."
         exit 1
     }
-    Write-Host "  ✓ Checksum verified: $actualHash" -ForegroundColor Green
+    Write-Host "  [OK] Checksum verified: $actualHash" -ForegroundColor Green
 
     # 3. Extract and place binary
     Write-Host "`n[3/4] Installing executable..." -ForegroundColor Cyan
@@ -127,7 +127,7 @@ try {
     }
 
     Copy-Item -LiteralPath $extractedExe -Destination $targetExe -Force
-    Write-Host "  ✓ Installed binary to: $targetExe" -ForegroundColor Green
+    Write-Host "  [OK] Installed binary to: $targetExe" -ForegroundColor Green
 
     # 4. Register in User PATH environment variable preserving REG_EXPAND_SZ
     Write-Host "`n[4/4] Configuring Environment PATH..." -ForegroundColor Cyan
@@ -163,7 +163,7 @@ try {
                 "$rawPath;$installBinDir"
             }
             $envSubKey.SetValue('Path', $newPath, $regKind)
-            Write-Host "  ✓ Added '$installBinDir' to User PATH." -ForegroundColor Green
+            Write-Host "  [OK] Added '$installBinDir' to User PATH." -ForegroundColor Green
 
             # Broadcast WM_SETTINGCHANGE to notify running applications of environment change
             try {
@@ -189,7 +189,7 @@ public static extern System.IntPtr SendMessageTimeout(
                 # Non-fatal if broadcast fails in headless/container environments
             }
         } else {
-            Write-Host "  ✓ User PATH already contains Orbit binary directory." -ForegroundColor Green
+            Write-Host "  [OK] User PATH already contains Orbit binary directory." -ForegroundColor Green
         }
         $envSubKey.Close()
     }
@@ -202,7 +202,7 @@ public static extern System.IntPtr SendMessageTimeout(
     # Run --version check
     $installedVersion = & $targetExe --version 2>&1
     Write-Host "`n===============================================" -ForegroundColor Green
-    Write-Host "✓ Installation completed successfully!" -ForegroundColor Green
+    Write-Host "[OK] Installation completed successfully!" -ForegroundColor Green
     Write-Host "  Version: $installedVersion" -ForegroundColor Green
     Write-Host "  Location: $targetExe" -ForegroundColor Gray
     Write-Host "===============================================" -ForegroundColor Green

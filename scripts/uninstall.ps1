@@ -78,7 +78,7 @@ $agyoBinDir = Join-Path $userHome ".agyo\bin"
 
 if (Test-Path -LiteralPath $agyoBinExe) {
     Remove-Item -LiteralPath $agyoBinExe -Force -ErrorAction SilentlyContinue
-    Write-Host "  ✓ Removed executable: $agyoBinExe" -ForegroundColor Green
+    Write-Host "  [OK] Removed executable: $agyoBinExe" -ForegroundColor Green
 }
 if ((Test-Path -LiteralPath $agyoBinDir) -and (Get-ChildItem -LiteralPath $agyoBinDir -ErrorAction SilentlyContinue).Count -eq 0) {
     Remove-Item -LiteralPath $agyoBinDir -Force -ErrorAction SilentlyContinue
@@ -115,13 +115,13 @@ if ($cargoBinDir) {
         }
 
         if ($cargoSucceeded) {
-            Write-Host "  ✓ Successfully uninstalled agy-orbit via Cargo." -ForegroundColor Green
+            Write-Host "  [OK] Successfully uninstalled agy-orbit via Cargo." -ForegroundColor Green
         } elseif (Test-Path -LiteralPath $cargoAgyoExe) {
             # Fallback: if cargo uninstall failed (not tracked in Cargo metadata), purge orphaned binary directly
             Write-Host "  [i] Cargo package 'agy-orbit' not registered; removing orphaned binary: $cargoAgyoExe" -ForegroundColor Gray
             Remove-Item -LiteralPath $cargoAgyoExe -Force -ErrorAction SilentlyContinue
             if (-not (Test-Path -LiteralPath $cargoAgyoExe)) {
-                Write-Host "  ✓ Removed orphaned executable from Cargo bin: $cargoAgyoExe" -ForegroundColor Green
+                Write-Host "  [OK] Removed orphaned executable from Cargo bin: $cargoAgyoExe" -ForegroundColor Green
             }
         }
     }
@@ -159,7 +159,7 @@ if ($envSubKey) {
         if ($found) {
             $newPath = $cleanedParts -join ';'
             $envSubKey.SetValue('Path', $newPath, $regKind)
-            Write-Host "  ✓ Removed Orbit binary directory from User PATH." -ForegroundColor Green
+            Write-Host "  [OK] Removed Orbit binary directory from User PATH." -ForegroundColor Green
 
             # Broadcast WM_SETTINGCHANGE
             try {
@@ -185,7 +185,7 @@ public static extern System.IntPtr SendMessageTimeout(
                 # Non-fatal
             }
         } else {
-            Write-Host "  ✓ No Orbit directory entry found in User PATH." -ForegroundColor Gray
+            Write-Host "  [OK] No Orbit directory entry found in User PATH." -ForegroundColor Gray
         }
     }
     $envSubKey.Close()
@@ -211,19 +211,19 @@ if (-not [string]::IsNullOrWhiteSpace($userHome)) {
         } else {
             $proceedDelete = $Force
             if (-not $Force) {
-                Write-Host "`n  ⚠️  WARNING: Storage directory contains your encrypted multi-account profiles!" -ForegroundColor Yellow
+                Write-Host "`n  [WARN] WARNING: Storage directory contains your encrypted multi-account profiles!" -ForegroundColor Yellow
                 $ans = Read-Host "  Do you want to permanently delete all Orbit credentials in '$agyoDir'? [y/N]"
                 if ($ans -match '^[yY]') { $proceedDelete = $true }
             }
             if ($proceedDelete) {
                 Remove-SafeDirectory -Path $agyoDir -ExpectedSuffix ".agyo" -Description "Orbit storage directory"
-                Write-Host "  ✓ Orbit storage removed." -ForegroundColor Green
+                Write-Host "  [OK] Orbit storage removed." -ForegroundColor Green
             } else {
                 Write-Host "  [i] Preserved storage at $agyoDir." -ForegroundColor Gray
             }
         }
     } else {
-        Write-Host "  ✓ No storage directory found at ~/.agyo" -ForegroundColor Gray
+        Write-Host "  [OK] No storage directory found at ~/.agyo" -ForegroundColor Gray
     }
 }
 
@@ -232,16 +232,16 @@ Write-Host "`n[5/5] Inspecting Shell Profile configuration..." -ForegroundColor 
 if ($PROFILE -and (Test-Path -LiteralPath $PROFILE)) {
     $profileContent = Get-Content -LiteralPath $PROFILE -Raw -ErrorAction SilentlyContinue
     if ($profileContent -and ($profileContent -match 'agyo completion' -or $profileContent -match '\.agyo\\completion\.ps1')) {
-        Write-Host "`n  ⚠️  ATTENTION: Found agyo shell completion in your PowerShell profile!" -ForegroundColor Yellow
+        Write-Host "`n  [WARN] ATTENTION: Found agyo shell completion in your PowerShell profile!" -ForegroundColor Yellow
         Write-Host "  File: $PROFILE" -ForegroundColor Gray
         Write-Host "  Please open your profile (e.g. 'notepad `$PROFILE') and remove the agyo completion line(s)" -ForegroundColor Yellow
         Write-Host "  to avoid startup errors in new terminal sessions.`n" -ForegroundColor Yellow
     } else {
-        Write-Host "  ✓ PowerShell profile is clean." -ForegroundColor Green
+        Write-Host "  [OK] PowerShell profile is clean." -ForegroundColor Green
     }
 }
 
 Write-Host "===============================================" -ForegroundColor Green
-Write-Host "✓ agy-orbit uninstallation tasks completed." -ForegroundColor Green
+Write-Host "[OK] agy-orbit uninstallation tasks completed." -ForegroundColor Green
 Write-Host "Note: Official Google Antigravity credentials in ~/.gemini/ are kept intact." -ForegroundColor Gray
 Write-Host "If you wish to log out from Antigravity entirely, run: 'agy auth logout'`n" -ForegroundColor Gray
