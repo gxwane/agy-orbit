@@ -1,6 +1,6 @@
 [package]
 name = "agy-orbit"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.98"
 description = "Seamless Multi-Account Manager & Isolated Orbit Runner for Antigravity CLI (agy)"
@@ -41,7 +41,7 @@ fs4 = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 crossterm = "0.28"
-ureq = { version = "2.10", default-features = false, features = ["json", "tls"] }
+ureq = { version = "2.10", default-features = false, features = ["json", "tls", "proxy-from-env", "socks-proxy"] }
 clap_complete = "4.5"
 aes-gcm = "0.10"
 getrandom = "0.2"

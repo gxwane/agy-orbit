@@ -74,6 +74,7 @@ impl GitHubReleaseAdapter {
             .timeout_connect(self.connect_timeout)
             .timeout_read(self.read_timeout)
             .redirects(0)
+            .try_proxy_from_env(true)
             .build()
     }
 
@@ -415,5 +416,14 @@ mod tests {
             resolve_redirect_url(base, "http://release-assets.githubusercontent.com/agyo.zip")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_build_agent_proxy_env_safety() {
+        let adapter = GitHubReleaseAdapter::new();
+        let _agent = adapter.build_agent();
+
+        let probe = GitHubReleaseAdapter::new_micro_probe();
+        let _probe_agent = probe.build_agent();
     }
 }

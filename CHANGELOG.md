@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-17
+
+### Fixed
+- **HTTP / HTTPS / SOCKS5 Proxy Environment Support (`agyo upgrade`)**:
+  - Enabled `proxy-from-env` and `socks-proxy` features in `ureq` HTTP client.
+  - Activated `.try_proxy_from_env(true)` in `GitHubReleaseAdapter::build_agent()`, ensuring `agyo upgrade` and non-blocking startup update check respect standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`).
+  - Added full support for SOCKS5 proxy schemes (`socks5://`, `socks5h://`) commonly utilized in restricted network environments.
+  - Preserved strict `ALLOWED_HOSTS` domain whitelist and SHA-256 binary checksum verification, guaranteeing zero compromise to release asset anti-tamper security.
+
 ## [0.3.0] - 2026-09-17
 
 ### Added
