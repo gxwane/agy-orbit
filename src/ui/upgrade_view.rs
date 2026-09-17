@@ -104,31 +104,34 @@ pub fn render_upgrade_result(result: &UpgradeResult, exe_path: Option<&Path>) {
 /// 2. Escape hatch: `AGYO_NO_UPDATE_CHECK=1` or `CI=true` disables checks.
 /// 3. Whitelist: Only active for interactive root TUI (`None`), `whoami`, and online `doctor`.
 pub fn should_enable_startup_update_check(cmd: &Option<Commands>) -> bool {
-    should_enable_startup_update_check_internal(cmd, is_interactive())
+    should_enable_startup_update_check_internal(cmd, is_interactive(), false)
 }
 
-/// Internal testable implementation with explicit terminal interactivity flag.
+/// Internal testable implementation with explicit terminal interactivity and escape-hatch bypass flags.
 pub fn should_enable_startup_update_check_internal(
     cmd: &Option<Commands>,
     interactive: bool,
+    ignore_env_escapes: bool,
 ) -> bool {
     // Guard 1: Must be in an interactive terminal
     if !interactive {
         return false;
     }
 
-    // Guard 2: Respect environment variable escape hatches
-    if std::env::var("AGYO_NO_UPDATE_CHECK")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    if std::env::var("CI")
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
-    {
-        return false;
+    // Guard 2: Respect environment variable escape hatches unless explicitly bypassed in testing
+    if !ignore_env_escapes {
+        if std::env::var("AGYO_NO_UPDATE_CHECK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        if std::env::var("CI")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+        {
+            return false;
+        }
     }
 
     // Guard 3: Command whitelist
@@ -159,11 +162,19 @@ mod tests {
 
     #[test]
     fn test_is_cargo_installation() {
-        let cargo_bin = Path::new("C:\\Users\\user\\.cargo\\bin\\agyo.exe");
-        let local_bin = Path::new("C:\\Users\\user\\.agyo\\bin\\agyo.exe");
+        let cargo_bin = Path::new("home")
+            .join("user")
+            .join(".cargo")
+            .join("bin")
+            .join("agyo");
+        let local_bin = Path::new("home")
+            .join("user")
+            .join(".agyo")
+            .join("bin")
+            .join("agyo");
 
-        assert!(is_cargo_installation(cargo_bin));
-        assert!(!is_cargo_installation(local_bin));
+        assert!(is_cargo_installation(&cargo_bin));
+        assert!(!is_cargo_installation(&local_bin));
     }
 
     #[test]
@@ -182,26 +193,33 @@ mod tests {
             Commands::CompleteOrbits
         )));
 
-        // When explicitly interactive: whitelist commands return true, non-whitelisted return false
-        assert!(should_enable_startup_update_check_internal(&None, true));
+        // When explicitly interactive and bypassing env escapes: whitelist commands return true, non-whitelisted return false
+        assert!(should_enable_startup_update_check_internal(
+            &None, true, true
+        ));
         assert!(should_enable_startup_update_check_internal(
             &Some(Commands::Whoami),
+            true,
             true
         ));
         assert!(should_enable_startup_update_check_internal(
             &Some(Commands::Doctor { offline: false }),
+            true,
             true
         ));
         assert!(!should_enable_startup_update_check_internal(
             &Some(Commands::Doctor { offline: true }),
+            true,
             true
         ));
         assert!(!should_enable_startup_update_check_internal(
             &Some(Commands::List),
+            true,
             true
         ));
         assert!(!should_enable_startup_update_check_internal(
             &Some(Commands::CompleteOrbits),
+            true,
             true
         ));
     }

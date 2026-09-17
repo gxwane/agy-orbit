@@ -211,18 +211,23 @@ fn test_guardrails_escape_hatches() {
         Commands::Doctor { offline: true }
     )));
 
-    // Interactive tests
-    assert!(should_enable_startup_update_check_internal(&None, true));
+    // Interactive tests (bypass CI/env escape hatches for pure whitelist verification)
+    assert!(should_enable_startup_update_check_internal(
+        &None, true, true
+    ));
     assert!(should_enable_startup_update_check_internal(
         &Some(Commands::Whoami),
+        true,
         true
     ));
     assert!(should_enable_startup_update_check_internal(
         &Some(Commands::Doctor { offline: false }),
+        true,
         true
     ));
     assert!(!should_enable_startup_update_check_internal(
         &Some(Commands::Doctor { offline: true }),
+        true,
         true
     ));
     assert!(!should_enable_startup_update_check_internal(
@@ -231,9 +236,12 @@ fn test_guardrails_escape_hatches() {
             restore: false,
             cmd: vec![],
         }),
+        true,
         true
     ));
-    assert!(!should_enable_startup_update_check_internal(&None, false));
+    assert!(!should_enable_startup_update_check_internal(
+        &None, false, true
+    ));
 }
 
 #[test]
