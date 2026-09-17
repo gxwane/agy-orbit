@@ -7,9 +7,7 @@ use agy_orbit::error::{OrbitError, Result};
 use agy_orbit::infra::storage::FileUpdateCacheAdapter;
 use agy_orbit::infra::storage::paths::{TestPathsOverride, set_test_paths};
 use agy_orbit::ports::upgrade::{ReleaseProviderPort, UpdateCachePort};
-use agy_orbit::ui::{
-    should_enable_startup_update_check, should_enable_startup_update_check_internal,
-};
+use agy_orbit::ui::{is_command_whitelisted_for_update_check, should_enable_startup_update_check};
 use common::sandbox::TestSandbox;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -202,46 +200,38 @@ fn test_update_check_fail_silent_on_rate_limit() {
 
 #[test]
 fn test_guardrails_escape_hatches() {
-    // Non-whitelisted commands should always be false
-    assert!(!should_enable_startup_update_check(&Some(
-        Commands::CompleteOrbits
+    // 1. Pure Command Whitelist Verification (Deterministic, independent of CI/TTY)
+    assert!(is_command_whitelisted_for_update_check(&None));
+    assert!(is_command_whitelisted_for_update_check(&Some(
+        Commands::Whoami
     )));
-    assert!(!should_enable_startup_update_check(&Some(Commands::List)));
-    assert!(!should_enable_startup_update_check(&Some(
-        Commands::Doctor { offline: true }
+    assert!(is_command_whitelisted_for_update_check(&Some(
+        Commands::Doctor { offline: false }
     )));
 
-    // Interactive tests (bypass CI/env escape hatches for pure whitelist verification)
-    assert!(should_enable_startup_update_check_internal(
-        &None, true, true
-    ));
-    assert!(should_enable_startup_update_check_internal(
-        &Some(Commands::Whoami),
-        true,
-        true
-    ));
-    assert!(should_enable_startup_update_check_internal(
-        &Some(Commands::Doctor { offline: false }),
-        true,
-        true
-    ));
-    assert!(!should_enable_startup_update_check_internal(
-        &Some(Commands::Doctor { offline: true }),
-        true,
-        true
-    ));
-    assert!(!should_enable_startup_update_check_internal(
-        &Some(Commands::Run {
+    // Non-whitelisted commands must be strictly rejected
+    assert!(!is_command_whitelisted_for_update_check(&Some(
+        Commands::Doctor { offline: true }
+    )));
+    assert!(!is_command_whitelisted_for_update_check(&Some(
+        Commands::CompleteOrbits
+    )));
+    assert!(!is_command_whitelisted_for_update_check(&Some(
+        Commands::List
+    )));
+    assert!(!is_command_whitelisted_for_update_check(&Some(
+        Commands::Run {
             name: "work".into(),
             restore: false,
             cmd: vec![],
-        }),
-        true,
-        true
-    ));
-    assert!(!should_enable_startup_update_check_internal(
-        &None, false, true
-    ));
+        }
+    )));
+
+    // 2. Integration Safety Check: In test / CI environments (non-TTY),
+    // should_enable_startup_update_check must safely short-circuit to false for all commands.
+    assert!(!should_enable_startup_update_check(&None));
+    assert!(!should_enable_startup_update_check(&Some(Commands::Whoami)));
+    assert!(!should_enable_startup_update_check(&Some(Commands::List)));
 }
 
 #[test]

@@ -17,6 +17,6 @@ pub use selector::{install_terminal_panic_hook, is_interactive, select_orbit_int
 pub use table_view::render_orbits_table;
 pub use uninstall_view::{render_uninstall_plan, render_uninstall_result};
 pub use upgrade_view::{
-    render_update_hint, render_upgrade_result, should_enable_startup_update_check,
-    should_enable_startup_update_check_internal,
+    is_cargo_installation, is_command_whitelisted_for_update_check, render_update_hint,
+    render_upgrade_result, should_enable_startup_update_check,
 };

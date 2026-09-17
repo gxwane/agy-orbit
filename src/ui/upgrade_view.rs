@@ -7,7 +7,12 @@ use std::path::Path;
 
 /// Detect if current executable resides in a Cargo installation directory (~/.cargo/bin).
 pub fn is_cargo_installation(exe_path: &Path) -> bool {
-    exe_path.components().any(|c| c.as_os_str() == ".cargo")
+    exe_path.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .map(|s| s.eq_ignore_ascii_case(".cargo"))
+            .unwrap_or(false)
+    })
 }
 
 /// Render the upgrade operation result to standard output.
@@ -97,48 +102,58 @@ pub fn render_upgrade_result(result: &UpgradeResult, exe_path: Option<&Path>) {
     }
 }
 
-/// Determine whether startup update check probe and display should be triggered.
+/// Pure policy: Determine if a command is whitelisted for startup update checks.
 ///
-/// Guardrails:
-/// 1. Interactive terminal required (bypasses non-TTY, pipes, and CI).
-/// 2. Escape hatch: `AGYO_NO_UPDATE_CHECK=1` or `CI=true` disables checks.
-/// 3. Whitelist: Only active for interactive root TUI (`None`), `whoami`, and online `doctor`.
-pub fn should_enable_startup_update_check(cmd: &Option<Commands>) -> bool {
-    should_enable_startup_update_check_internal(cmd, is_interactive(), false)
-}
-
-/// Internal testable implementation with explicit terminal interactivity and escape-hatch bypass flags.
-pub fn should_enable_startup_update_check_internal(
-    cmd: &Option<Commands>,
-    interactive: bool,
-    ignore_env_escapes: bool,
-) -> bool {
-    // Guard 1: Must be in an interactive terminal
-    if !interactive {
-        return false;
-    }
-
-    // Guard 2: Respect environment variable escape hatches unless explicitly bypassed in testing
-    if !ignore_env_escapes {
-        if std::env::var("AGYO_NO_UPDATE_CHECK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-        {
-            return false;
-        }
-        if std::env::var("CI")
-            .map(|v| !v.is_empty() && v != "0")
-            .unwrap_or(false)
-        {
-            return false;
-        }
-    }
-
-    // Guard 3: Command whitelist
+/// Guardrail: Only active for interactive root TUI (`None`), `whoami`, and online `doctor`.
+/// This is a deterministic pure function with zero I/O and zero side effects.
+#[inline]
+pub fn is_command_whitelisted_for_update_check(cmd: &Option<Commands>) -> bool {
     matches!(
         cmd,
         None | Some(Commands::Whoami) | Some(Commands::Doctor { offline: false })
     )
+}
+
+/// Check whether environment variable escape hatches are active.
+fn is_env_escape_active() -> bool {
+    if std::env::var("AGYO_NO_UPDATE_CHECK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if std::env::var("CI")
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+/// Determine whether startup update check probe and display should be triggered.
+///
+/// Guardrails executed in optimal short-circuiting order:
+/// 1. Whitelist: Pure CPU check exits immediately for 90% non-whitelisted commands (no syscalls).
+/// 2. Interactive terminal required (bypasses non-TTY, pipes, and CI).
+/// 3. Escape hatch: `AGYO_NO_UPDATE_CHECK=1` or `CI=true` disables checks.
+pub fn should_enable_startup_update_check(cmd: &Option<Commands>) -> bool {
+    // Guard 1: Command whitelist (pure check, fast path)
+    if !is_command_whitelisted_for_update_check(cmd) {
+        return false;
+    }
+
+    // Guard 2: Must be in an interactive terminal
+    if !is_interactive() {
+        return false;
+    }
+
+    // Guard 3: Respect environment variable escape hatches
+    if is_env_escape_active() {
+        return false;
+    }
+
+    true
 }
 
 /// Render a gentle, non-blocking single-line update notification at the bottom of the output.
@@ -175,11 +190,49 @@ mod tests {
 
         assert!(is_cargo_installation(&cargo_bin));
         assert!(!is_cargo_installation(&local_bin));
+
+        // Case insensitivity test
+        let cargo_bin_mixed = Path::new("home")
+            .join("user")
+            .join(".Cargo")
+            .join("bin")
+            .join("agyo");
+        assert!(is_cargo_installation(&cargo_bin_mixed));
     }
 
     #[test]
-    fn test_should_enable_startup_update_check_command_filtering() {
-        // When not interactive (default in tests), always returns false
+    fn test_command_whitelist_pure_policy() {
+        // Whitelisted commands
+        assert!(is_command_whitelisted_for_update_check(&None));
+        assert!(is_command_whitelisted_for_update_check(&Some(
+            Commands::Whoami
+        )));
+        assert!(is_command_whitelisted_for_update_check(&Some(
+            Commands::Doctor { offline: false }
+        )));
+
+        // Non-whitelisted commands
+        assert!(!is_command_whitelisted_for_update_check(&Some(
+            Commands::Doctor { offline: true }
+        )));
+        assert!(!is_command_whitelisted_for_update_check(&Some(
+            Commands::List
+        )));
+        assert!(!is_command_whitelisted_for_update_check(&Some(
+            Commands::CompleteOrbits
+        )));
+        assert!(!is_command_whitelisted_for_update_check(&Some(
+            Commands::Run {
+                name: "test".into(),
+                restore: false,
+                cmd: vec![],
+            }
+        )));
+    }
+
+    #[test]
+    fn test_should_enable_startup_update_check_guardrails() {
+        // In unit test environment (non-interactive), should_enable_startup_update_check must return false
         assert!(!should_enable_startup_update_check(&None));
         assert!(!should_enable_startup_update_check(&Some(Commands::Whoami)));
         assert!(!should_enable_startup_update_check(&Some(
@@ -192,35 +245,5 @@ mod tests {
         assert!(!should_enable_startup_update_check(&Some(
             Commands::CompleteOrbits
         )));
-
-        // When explicitly interactive and bypassing env escapes: whitelist commands return true, non-whitelisted return false
-        assert!(should_enable_startup_update_check_internal(
-            &None, true, true
-        ));
-        assert!(should_enable_startup_update_check_internal(
-            &Some(Commands::Whoami),
-            true,
-            true
-        ));
-        assert!(should_enable_startup_update_check_internal(
-            &Some(Commands::Doctor { offline: false }),
-            true,
-            true
-        ));
-        assert!(!should_enable_startup_update_check_internal(
-            &Some(Commands::Doctor { offline: true }),
-            true,
-            true
-        ));
-        assert!(!should_enable_startup_update_check_internal(
-            &Some(Commands::List),
-            true,
-            true
-        ));
-        assert!(!should_enable_startup_update_check_internal(
-            &Some(Commands::CompleteOrbits),
-            true,
-            true
-        ));
     }
 }
