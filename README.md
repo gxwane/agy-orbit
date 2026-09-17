@@ -8,6 +8,8 @@
 **English** | [简体中文](README_zh.md)
 
 > 🪐 **The lightweight multi-account switcher and quota dashboard for Google Antigravity CLI (`agy`).**  
+> *(Google Antigravity CLI 轻量多账号极速切换与模型配额监控工具)*  
+>  
 > Sub-second account switching without re-login. Live model quota dashboard. Zero risk to chat history or plugins.
 
 ---
