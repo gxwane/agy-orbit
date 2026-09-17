@@ -8,7 +8,7 @@
 **English** | [简体中文](README_zh.md)
 
 > 🪐 **The lightweight multi-account switcher and quota dashboard for Google Antigravity CLI (`agy`).**  
-> Switch accounts in 1s without re-login. Inspect live model quotas at a glance. Zero risk to chat history.
+> Sub-second account switching without re-login. Live model quota dashboard. Zero risk to chat history or plugins.
 
 ---
 
@@ -18,7 +18,7 @@ During intensive coding sessions with Google Antigravity CLI (`agy`), hitting **
 
 `agy-orbit` (`agyo`) solves this seamlessly:
 
-- ⚡ **Instant Account Switching**: Snapshot your accounts once, then switch in milliseconds with `agyo use <name>`. Or simply run `agyo` to open an intuitive arrow-key interactive menu.
+- ⚡ **Sub-Second Account Switching**: Snapshot your accounts once, then switch in milliseconds with `agyo use <name>` (no browser popups or re-authentication). Or simply run `agyo` to open an intuitive arrow-key interactive menu.
 - 📊 **Aggregated Quota Dashboard**: Run `agyo quota --all` to view Gemini & Claude usage percentages, account health, and exact reset countdowns across all your accounts at a glance.
 - 🔒 **Zero-Touch Safety**: Strictly scoped to auth tokens. **Never touches, scans, or overwrites** your chat history (`brain/`) or plugins. All secrets are secured with OS-native encryption (Windows DPAPI / POSIX AES-256-GCM).
 - 🛡️ **Crash-Resilient & Concurrency-Safe**: Built-in 4-phase WAL state machine and process lifetime locks ensure your credentials are never corrupted, even during sudden power loss or multi-terminal runs.
@@ -35,7 +35,7 @@ $ agyo
 > work     (alice@company.com)  [Active]
   backup   (spare.alice@gmail.com)
 
-# 🚀 One-shot command line switch (<5ms, zero browser popups)
+# 🚀 One-shot command line switch (<5ms, no browser re-auth)
 $ agyo use personal
 ✔ Switched active Orbit to 'personal' (dev.alice@gmail.com).
 
