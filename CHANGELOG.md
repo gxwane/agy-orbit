@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
+### Added
+- **Zero-Mutation Health Diagnostic Command (`agyo doctor`)**:
+  - Brand-new `agyo doctor` diagnostic command (aliases: `doc`, `dr`) and `--offline` probe flag.
+  - 5-dimensional non-destructive health analysis:
+    - *Target Plane (`~/.gemini`)*: File existence, JSON schema validity, and active client ID inspection (`Antigravity` vs legacy `Gemini CLI`).
+    - *OS Keyring*: Proactive reachability and read check for `LegacyGeneric:target=gemini:antigravity` credentials without mutating system secrets.
+    - *Runtime & Crash Journal*: Strict read-only inspection of cross-process lease locks and uncommitted WAL transaction journals (`wal.journal`).
+    - *Network & Proxy Reachability*: Live connectivity, HTTP status semantics, and latency probing against Google Cloud Code PA endpoints (`cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`) and OAuth token endpoint (`oauth2.googleapis.com`).
+    - *Orbit Vault Storage*: Multi-account storage hierarchy and index schema integrity validation (`~/.agyo/orbits/`).
+  - SOCKS5 proxy auto-detection (`has_socks5`) alerting users to potentially incompatible `socks5://` proxy variables causing HTTP client timeouts.
+  - Full-color TTY and graceful non-TTY plaintext reporter with actionable fix recommendations and non-zero exit code on critical failures.
+- **Interactive Terminal Ergonomics Hints**:
+  - Contextual `whoami` guidance recommending `agyo save <name>` when running in an interactive terminal under an unmanaged Antigravity account.
+  - Contextual quota tip suggesting `agyo quota -a` for multi-orbit inspection.
+
+### Changed
+- **Typed Quota Error Architecture & Fail-Fast Cascading**:
+  - Granular typed errors: `OrbitError::QuotaUnauthorized` (401), `OrbitError::QuotaForbidden` (403), and `OrbitError::QuotaRateLimited` (429) with `Retry-After` header extraction.
+  - Implemented HTTP 403 fail-fast behavior stopping downstream endpoint retry cascades immediately, preventing unnecessary retry storms against Google Quota APIs.
+
+### Fixed
+- **PowerShell 5.1 RemoteException in Uninstallation Scripts**:
+  - Isolated `$ErrorActionPreference` during `cargo uninstall agy-orbit` in `scripts/uninstall.ps1` to prevent terminating native stderr false-alarms.
+  - Added automatic fallback deletion for orphaned `agyo.exe` / `agyo` binaries in Cargo bin directories when not tracked by Cargo metadata.
+  - Hardened POSIX uninstaller (`scripts/uninstall.sh`) with robust Cargo bin resolution and fallback cleanup.
+
+### Security
+- **Strict Read-Only Guarantee in Diagnostics**:
+  - Enforced zero-mutation design invariants across all doctor probes (zero disk writes, zero keyring modifications, zero lock acquisition side-effects).
+
 ## [0.1.0] - 2026-09-16
 
 ### Added

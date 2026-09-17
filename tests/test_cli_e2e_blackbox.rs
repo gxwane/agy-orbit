@@ -39,7 +39,7 @@ fn test_cli_help_and_version() {
         .expect("Failed to execute agyo --version");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.1.0"));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

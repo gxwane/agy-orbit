@@ -56,7 +56,10 @@ impl NetworkProbePort for UreqProbeAdapter {
 
         let start = Instant::now();
         // Use HEAD if possible, but fallback to GET with tiny range if needed
-        let req = agent.get(url).set("User-Agent", "agyo-doctor/0.1.0");
+        let req = agent.get(url).set(
+            "User-Agent",
+            concat!("agyo-doctor/", env!("CARGO_PKG_VERSION")),
+        );
 
         let (reachable, http_status, error) = match req.call() {
             Ok(resp) => (true, Some(resp.status()), None),
