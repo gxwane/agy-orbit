@@ -285,6 +285,7 @@ If you previously configured shell completion, remove the corresponding line fro
 | `AGYO_RUNTIME_DIR` | Windows: `%LOCALAPPDATA%\agy-orbit\run`<br>Unix: `$XDG_RUNTIME_DIR/agyo` | Ephemeral runtime lock & lease directory |
 | `AGYO_KEYRING_TARGET` | `LegacyGeneric:target=gemini:antigravity` | Windows Credential Manager target entry |
 | `AGYO_KEYRING_SERVICE`| `gemini` | Linux SecretService / macOS Keychain service name |
+| `AGYO_NO_UPDATE_CHECK`| `0` (disabled) | Set to `1` or `true` to completely disable startup background update checks |
 
 ---
 

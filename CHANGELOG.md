@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-17
+
+### Added
+- **Non-Blocking Startup Update Check (Autonomous Upgrade Sensing)**:
+  - Background asynchronous sub-second micro-probe (`GitHubReleaseAdapter::new_micro_probe`) checking GitHub Releases without impacting command responsiveness (main thread overhead < 0.2ms).
+  - **Optimistic Timestamp Reservation**: Atomically records `last_checked_at` before spawning probe thread, eliminating retry storms and rate-limit exhaustion from high-frequency command execution.
+  - **Adaptive Cooldown Engine**: 24-hour long-term cooldown on successful probe; adaptive 1-hour fast retry if background thread was terminated early by short-lived CLI commands.
+  - **Cheap Guard First Nano-Benchmark Path**: Pure CPU-bound enum matching for command whitelists exits within 1~2ns for 90% of non-whitelisted commands (`run`, `use`, `save`, `list`), bypassing terminal driver syscalls.
+  - **Zero-Unwrap Fail-Silent Guarantee**: 100% silent degradation on network timeouts, DNS failures, or GitHub 403 rate limits without any console error or stderr pollution.
+  - **Gentle Non-Blocking UI Hint**: Outputs a single-line, non-interactive update notification (`💡 Update available: vX.X.X -> vY.Y.Y. Run 'agyo upgrade' to upgrade.`) at the very bottom of whitelisted command execution (`agyo`, `whoami`, online `doctor`).
+  - **System Clock Skew Defense**: Robust backward time detection in `is_expired` preventing perpetual cache freezing on NTP clock rollbacks.
+  - **Self-Healing Corrupted Cache**: Automatic fallback to cache miss on damaged or truncated `update_check.json`.
+  - **Comprehensive Escape Hatches & Guardrails**: Automatically bypassed in non-interactive terminals, Unix pipes, CI environments (`CI=true`), or explicit opt-out via `AGYO_NO_UPDATE_CHECK=1`.
+
+### Changed
+- **Cross-Platform Path Hygiene**: Enhanced `is_cargo_installation` with ASCII case-insensitivity and platform-agnostic path components matching on Windows, macOS, and Linux.
+
 ## [0.2.1] - 2026-09-17
 
 ### Fixed

@@ -285,6 +285,7 @@ agyo uninstall --dry-run
 | `AGYO_RUNTIME_DIR` | Windows: `%LOCALAPPDATA%\agy-orbit\run`<br>Unix: `$XDG_RUNTIME_DIR/agyo` | 易失瞬态锁与租约目录 |
 | `AGYO_KEYRING_TARGET` | `LegacyGeneric:target=gemini:antigravity` | Windows 凭据管理器目标条目名 |
 | `AGYO_KEYRING_SERVICE`| `gemini` | Linux SecretService / macOS Keychain 服务标识 |
+| `AGYO_NO_UPDATE_CHECK`| `0` (未禁用) | 设置为 `1` 或 `true` 可完全关闭启动时后台自动检查更新 |
 
 ---
 

@@ -1,6 +1,6 @@
 [package]
 name = "agy-orbit"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Seamless Multi-Account Manager & Isolated Orbit Runner for Antigravity CLI (agy)"
