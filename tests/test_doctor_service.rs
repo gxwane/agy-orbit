@@ -287,7 +287,31 @@ fn test_doctor_client_identity_detection() {
         client_sec
             .items
             .iter()
-            .any(|item| item.status == CheckStatus::Warn && item.summary.contains("Gemini CLI"))
+            .any(|item| item.status == CheckStatus::Info
+                && item.summary.contains("Gemini CLI")
+                && item.name.contains("(Live Plane: unmanaged)"))
+    );
+
+    // Test with active orbit configured
+    let index_with_active = OrbitIndex {
+        active_orbit: Some("test-orbit".to_string()),
+        ..Default::default()
+    };
+    storage.save_index(&index_with_active).unwrap();
+
+    let service2 = DoctorService::new(&target, &keyring, &storage, None);
+    let report2 = service2.diagnose().unwrap();
+    let client_sec2 = report2
+        .sections
+        .iter()
+        .find(|s| s.title.contains("OAuth Client Identity"))
+        .expect("Client section must exist");
+    assert!(
+        client_sec2
+            .items
+            .iter()
+            .any(|item| item.status == CheckStatus::Info
+                && item.name.contains("(Active Orbit: test-orbit)"))
     );
 }
 

@@ -118,6 +118,9 @@ agyo run personal -- agy
 
 # 8. Inspect live quota consumption dashboard across all accounts
 agyo quota --all
+
+# 9. Diagnose environment health, authentication targets & connectivity
+agyo doctor
 ```
 
 ---
@@ -134,6 +137,7 @@ agyo quota --all
 | `agyo run <orbit> [-- <cmd...>]`| `r` | Run command under Lifetime Lease lock with reverse token sync (`--restore`) |
 | `agyo quota [orbit]` | `q` | Check live model quota and countdowns (`-a, --all`, `-r, --refresh`) |
 | `agyo remove <orbit>` | `rm` | Safely delete a saved Orbit profile |
+| `agyo doctor` | `doc`, `dr` | Run zero-mutation 5-dimension health diagnostic & connectivity probe (`-o, --offline`) |
 | `agyo completion [shell]` | `comp`| Generate shell completion script (`--raw`, supports bash, zsh, fish, powershell, elvish) |
 | `agyo upgrade` | `update`, `up` | Check for updates and self-upgrade binary in-place (`-c, --check`, `-f, --force`, `-p`) |
 | `agyo uninstall` | `purge` | Safely uninstall agy-orbit and clean runtime data (`-y, --yes`, `--keep-vault`, `--dry-run`, `--delete-self`) |
@@ -155,6 +159,9 @@ agyo quota --all
 #### `agyo completion [SHELL]`
 - `[SHELL]`: Target shell family (`bash`, `zsh`, `fish`, `powershell`, `elvish`). Auto-detected if omitted in interactive terminals.
 - `--raw`: Output raw completion script without setup instructions.
+
+#### `agyo doctor` (aliases: `doc`, `dr`)
+- `-o, --offline`: Skip live Google Cloud Code and OAuth endpoint probing, performing local-only system, credential, and storage inspection.
 
 #### `agyo upgrade`
 - `-c, --check`: Check for updates without downloading or installing.

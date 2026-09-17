@@ -118,6 +118,9 @@ agyo run personal -- agy
 
 # 8. 查看所有账号的实时模型用量大盘与倒计时
 agyo quota --all
+
+# 9. 随时对本地环境、凭据与网络连通性进行全面体检
+agyo doctor
 ```
 
 ---
@@ -134,6 +137,7 @@ agyo quota --all
 | `agyo run <orbit> [-- <cmd...>]`| `r` | 持有生命周期排他租约运行子进程，退出时反向同步最新 Token（支持 `--restore`） |
 | `agyo quota [orbit]` | `q` | 查询各模型池配额与重置倒计时（支持 `-a, --all`, `-r, --refresh`） |
 | `agyo remove <orbit>` | `rm` | 安全删除指定轨道及其加密快照 |
+| `agyo doctor` | `doc`, `dr` | 运行零突变五维健康巡检与网络连通性诊断（支持 `-o, --offline`） |
 | `agyo completion [shell]` | `comp`| 生成 Shell 自动补全脚本（支持 `--raw`，涵盖 bash, zsh, fish, powershell, elvish） |
 | `agyo upgrade` | `update`, `up` | 检查新版本并原地安全自更新（支持 `-c, --check`, `-f, --force`, `-p`） |
 | `agyo uninstall` | `purge` | 安全卸载 agy-orbit 并清理运行时数据（支持 `-y, --yes`, `--keep-vault`, `--dry-run`, `--delete-self`） |
@@ -155,6 +159,9 @@ agyo quota --all
 #### `agyo completion [SHELL]`
 - `[SHELL]`：目标 Shell 类型（`bash`, `zsh`, `fish`, `powershell`, `elvish`）。在交互终端中省略将自动探测当前环境。
 - `--raw`：仅输出原始补全脚本，不包含配置指引文字。
+
+#### `agyo doctor`（别名：`doc`, `dr`）
+- `-o, --offline`：跳过 Google 远端端点探测，仅执行本地环境、凭据格式与存储状态巡检。
 
 #### `agyo upgrade`
 - `-c, --check`：仅检查是否有新版本，不执行下载与安装。

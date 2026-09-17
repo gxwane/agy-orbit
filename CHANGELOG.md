@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-17
+
+### Fixed
+- **Doctor Diagnostic Scope & False Positive Reduction**:
+  - Context-aware client identity scoping dynamically reporting the active Orbit name (e.g. `OAuth Client Identity (Active Orbit: gio)`) rather than misleading global vault claims.
+  - Downgraded open-source Gemini CLI detection from `CheckStatus::Warn` to `CheckStatus::Info`, preserving diagnostic guidance while preventing false-positive `ATTENTION REQUIRED` health statuses on operational systems.
+  - Refined network probe details from bare `HTTP 404` to `HTTP 404 (Remote server responded)` to eliminate user confusion regarding connection reachability semantics.
+  - Implemented safe fallback extraction for `storage.load_index()` preventing diagnostic disruption when uninitialized.
+
+### Documentation
+- **Complete CLI Reference for `agyo doctor`**:
+  - Added `agyo doctor` (aliases: `doc`, `dr`) to Quick Start walkthroughs, command reference tables, and detailed flag manuals across both `README.md` and `README_zh.md`.
+
 ## [0.2.0] - 2026-09-17
 
 ### Added

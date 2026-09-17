@@ -403,11 +403,22 @@ impl<'a> DoctorService<'a> {
     fn diagnose_client_identity(&self, client_id_opt: Option<&str>) -> DiagnosticSection {
         let mut items = Vec::new();
 
+        let active_orbit = self
+            .storage
+            .load_index()
+            .ok()
+            .and_then(|idx| idx.active_orbit);
+
+        let item_name = match active_orbit {
+            Some(ref name) => format!("OAuth Client Identity (Active Orbit: {name})"),
+            None => "OAuth Client Identity (Live Plane: unmanaged)".to_string(),
+        };
+
         match client_id_opt {
             Some(id) if id.starts_with(ANTIGRAVITY_CLIENT_ID_PREFIX) => {
                 items.push(
                     DiagnosticItem::new(
-                        "OAuth Client Identity",
+                        item_name,
                         CheckStatus::Pass,
                         "Official Google Antigravity CLI",
                     )
@@ -419,8 +430,8 @@ impl<'a> DoctorService<'a> {
             Some(id) if id.starts_with(GEMINI_CLI_CLIENT_ID_PREFIX) => {
                 items.push(
                     DiagnosticItem::new(
-                        "OAuth Client Identity",
-                        CheckStatus::Warn,
+                        item_name,
+                        CheckStatus::Info,
                         "Open-Source Gemini CLI detected",
                     )
                     .with_details(format!("Client ID prefix: {GEMINI_CLI_CLIENT_ID_PREFIX}..."))
@@ -432,7 +443,7 @@ impl<'a> DoctorService<'a> {
             Some(id) => {
                 let preview = if id.len() > 16 { &id[..16] } else { id };
                 items.push(DiagnosticItem::new(
-                    "OAuth Client Identity",
+                    item_name,
                     CheckStatus::Info,
                     format!("Custom/Third-party Client ({preview}...)"),
                 ));
@@ -440,7 +451,7 @@ impl<'a> DoctorService<'a> {
             None => {
                 items.push(
                     DiagnosticItem::new(
-                        "OAuth Client Identity",
+                        item_name,
                         CheckStatus::Info,
                         "Undetermined (no ID token present in credentials)",
                     )
@@ -533,7 +544,7 @@ impl<'a> DoctorService<'a> {
             if res.reachable {
                 let status_str = res
                     .http_status
-                    .map(|s| format!("HTTP {s}"))
+                    .map(|s| format!("HTTP {s} (Remote server responded)"))
                     .unwrap_or_else(|| "Connected".into());
                 let latency_str = res
                     .latency_ms
