@@ -286,6 +286,8 @@ agyo uninstall --dry-run
 | `AGYO_KEYRING_TARGET` | `LegacyGeneric:target=gemini:antigravity` | Windows 凭据管理器目标条目名 |
 | `AGYO_KEYRING_SERVICE`| `gemini` | Linux SecretService / macOS Keychain 服务标识 |
 | `AGYO_NO_UPDATE_CHECK`| `0` (未禁用) | 设置为 `1` 或 `true` 可完全关闭启动时后台自动检查更新 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | *(无)* | 标准 HTTP/HTTPS/SOCKS5 代理地址，供 `agyo upgrade` 与网络探测使用 |
+| `NO_PROXY` | *(无)* | 逗号分隔的豁免代理直连域名列表 |
 
 ---
 

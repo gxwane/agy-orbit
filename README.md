@@ -286,6 +286,8 @@ If you previously configured shell completion, remove the corresponding line fro
 | `AGYO_KEYRING_TARGET` | `LegacyGeneric:target=gemini:antigravity` | Windows Credential Manager target entry |
 | `AGYO_KEYRING_SERVICE`| `gemini` | Linux SecretService / macOS Keychain service name |
 | `AGYO_NO_UPDATE_CHECK`| `0` (disabled) | Set to `1` or `true` to completely disable startup background update checks |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | *(None)* | Standard HTTP/HTTPS/SOCKS5 proxy URLs respected by upgrade and network operations |
+| `NO_PROXY` | *(None)* | Comma-separated list of hostnames exempt from proxy routing |
 
 ---
 
