@@ -7,36 +7,47 @@
 
 **English** | [简体中文](README_zh.md)
 
-> 🪐 **Lightweight, transactional multi-account profile manager and lifetime lease supervisor for Google Antigravity CLI (`agy`).**
-> 
-> Fast (<5ms), cross-platform account switching and quota inspection with narrow authentication scoping and crash-resilient state guarantees.
+> 🪐 **The lightweight multi-account switcher and quota dashboard for Google Antigravity CLI (`agy`).**  
+> Switch accounts in 1s without re-login. Inspect live model quotas at a glance. Zero risk to chat history.
 
 ---
 
-## 💡 Why agy-orbit?
+## ✨ Why agy-orbit?
 
-When using Google Antigravity CLI (`agy`) for intensive AI coding:
-- `agy` does not natively support seamless multi-account profile switching or quota rotation.
-- **Full Directory Mirroring vs. Granular Target Isolation**: Coarse-grained approaches often treat the entire `~/.gemini/antigravity-cli/` runtime tree as a swappable profile. Because this directory hosts active conversation states (`brain/`), cached artifacts, and process lockfiles (often spanning tens of thousands of volatile files), blanket directory swapping introduces significant risks of unintended history loss, heavy disk I/O, and cross-platform file-locking collisions (e.g., Windows `Sharing Violation`).
+During intensive coding sessions with Google Antigravity CLI (`agy`), hitting **rate limits (HTTP 429)** is a common frustration, yet official multi-account management is not yet available. Re-authenticating manually requires tedious browser OAuth flows, and bluntly copying configuration directories risks destroying your local conversation history (`brain/`) or hitting file-lock errors.
 
-### 🛡️ Core Design Invariants
+`agy-orbit` (`agyo`) solves this seamlessly:
 
-`agy-orbit` is built on explicit, verifiable engineering constraints:
-1. **Narrow Runtime Scoping**: Leaves `~/.gemini/antigravity-cli/brain/`, `plugins/`, and runtime directories untouched. Avoids modifying `HOME` or `USERPROFILE` to prevent interference with developer toolchains (Git, OpenSSH, Cargo, npm, Docker).
-2. **Strictly Manage 3 Authentication Targets**:
-   - Target ①: `~/.gemini/oauth_creds.json` (active OAuth session)
-   - Target ②: `~/.gemini/google_accounts.json` (account mappings)
-   - Target ③: OS Credential Keyring (`gemini:antigravity`)
-3. **Tripartite Decoupled Storage Topology**:
-   - **Target Plane**: `~/.gemini/` (narrow, read/write active session only).
-   - **Storage & State Plane**: `~/.agyo/` (independent, crash-resilient encrypted database).
-   - **Ephemeral Runtime Plane**: `%LOCALAPPDATA%\agy-orbit\run` (Windows) or `$XDG_RUNTIME_DIR/agyo` (Linux/macOS) (tmpfs, memory-backed, immune to cloud drive sync locks).
-4. **Crash-Resilient WAL State Machine**: 4-phase atomic transitions (`PREPARE -> APPLY -> VERIFY -> COMMIT`). Auto-heals and rolls back interrupted switches on crash or power loss.
-5. **Platform-Native Encryption**: Windows DPAPI (`CryptProtectData`) / POSIX AES-256-GCM authenticated encryption. Zero plaintext secrets on disk.
-6. **Lifetime Lease Supervisor & Two-Way Sync**:
-   - `agyo run <orbit> -- agy`: Holds an exclusive kernel lock during child process execution to prevent terminal switching collisions.
-   - On process exit, automatically captures newly refreshed OAuth tokens back to Orbit storage before releasing locks.
-7. **Context-Aware Ergonomics**: Beautiful interactive TUI menu in interactive TTYs; silent plaintext fallback in scripts and pipes (`agyo | grep`).
+- ⚡ **Instant Account Switching**: Snapshot your accounts once, then switch in milliseconds with `agyo use <name>`. Or simply run `agyo` to open an intuitive arrow-key interactive menu.
+- 📊 **Aggregated Quota Dashboard**: Run `agyo quota --all` to view Gemini & Claude usage percentages, account health, and exact reset countdowns across all your accounts at a glance.
+- 🔒 **Zero-Touch Safety**: Strictly scoped to auth tokens. **Never touches, scans, or overwrites** your chat history (`brain/`) or plugins. All secrets are secured with OS-native encryption (Windows DPAPI / POSIX AES-256-GCM).
+- 🛡️ **Crash-Resilient & Concurrency-Safe**: Built-in 4-phase WAL state machine and process lifetime locks ensure your credentials are never corrupted, even during sudden power loss or multi-terminal runs.
+
+---
+
+## ⚡ Quick Look
+
+```bash
+# 🎯 Interactive switching: Just type agyo for an arrow-key menu (Enter to switch, Vim j/k supported)
+$ agyo
+? Select an Orbit to activate:
+  personal (dev.alice@gmail.com)
+> work     (alice@company.com)  [Active]
+  backup   (spare.alice@gmail.com)
+
+# 🚀 One-shot command line switch (<5ms, zero browser popups)
+$ agyo use personal
+✔ Switched active Orbit to 'personal' (dev.alice@gmail.com).
+
+# 📊 Unified quota dashboard across all accounts (never get surprised by 429s again)
+$ agyo quota --all
+┌──────────┬──────────────────────┬───────────┬───────────┬───────────┬───────────┬─────────┬────────────┐
+│ Orbit    │ Account              │ Gemini 5h │ Gemini Wk │ Claude 5h │ Claude Wk │ Health  │ Next Reset │
+├──────────┼──────────────────────┼───────────┼───────────┼───────────┼───────────┼─────────┼────────────┤
+│ * work   │ alice@company.com    │     85.0% │    100.0% │     60.0% │     90.0% │ Ready   │ 3h 42m     │
+│   person │ dev.alice@gmail.com  │      0.0% │     45.0% │     15.0% │     50.0% │ Throttl │ 45m        │
+└──────────┴──────────────────────┴───────────┴───────────┴───────────┴───────────┴─────────┴────────────┘
+```
 
 ---
 
@@ -291,14 +302,30 @@ If you previously configured shell completion, remove the corresponding line fro
 
 ---
 
-## 🛡️ Security Design Constraints & Anti-Malware Invariants
+## 🛡️ Architecture & Security Invariants (Deep Dive)
 
+`agy-orbit` is built on explicit, verifiable engineering constraints to guarantee credential security and system stability:
+
+### 1. Core Architectural Invariants
+- **Narrow Runtime Scoping**: Strictly avoids touching, scanning, or overwriting `brain/` (session history) or `plugins/`. Never modifies `HOME` or `USERPROFILE` to ensure zero interference with external developer toolchains.
+- **Strictly Manage 3 Authentication Targets**:
+  - Target ①: `~/.gemini/oauth_creds.json` (active OAuth session)
+  - Target ②: `~/.gemini/google_accounts.json` (account mappings)
+  - Target ③: OS Credential Keyring (Windows: `LegacyGeneric:target=gemini:antigravity`, macOS: Keychain, Linux: SecretService)
+- **Tripartite Decoupled Storage Topology**:
+  - **Target Plane**: `~/.gemini/` (narrow, read/write active session only).
+  - **Storage & State Plane**: `~/.agyo/` (independent, crash-resilient encrypted database).
+  - **Ephemeral Runtime Plane**: `%LOCALAPPDATA%\agy-orbit\run` (Windows) or `$XDG_RUNTIME_DIR/agyo` (Linux/macOS) (tmpfs, memory-backed, immune to cloud drive sync locks).
+- **Crash-Resilient WAL State Machine**: 4-phase atomic transitions (`PREPARE -> APPLY -> VERIFY -> COMMIT`). Auto-heals and rolls back interrupted switches on crash or power loss.
+- **Lifetime Lease Supervisor & Two-Way Sync**: `agyo run <orbit> -- agy` holds an exclusive kernel lock during child process execution to prevent terminal switching collisions; on process exit, automatically captures newly refreshed OAuth tokens back to Orbit storage.
+
+### 2. Anti-Malware & Security Design Constraints
 To maintain architectural transparency and minimize false-positive detections under modern EDR and antivirus heuristics, `agy-orbit` strictly enforces the following engineering constraints:
 1. **Scoped Credential Access**: Queries strictly the single target `gemini:antigravity`. Never enumerates or dumps other system secrets.
 2. **No Process Injection**: Never calls `CreateRemoteThread` or injects code into external processes.
 3. **No API Hooking**: Relies exclusively on standard, documented Win32 and POSIX system APIs.
 4. **No Binary Packing**: Distributed as clean, deterministic Rust binaries without UPX or custom obfuscators.
-5. **Zero Outbound Credential Telemetry**: Zero network requests other than standard Google quota endpoints.
+5. **Zero Outbound Credential Telemetry**: Zero network requests other than standard Google quota endpoints and GitHub update checks.
 6. **No Silent Persistence**: Never creates background daemons, scheduled tasks, or startup registry keys.
 7. **Read-Only Quota Invariant**: `agyo quota` strictly reads existing access tokens and **never** rotates or exchanges refresh tokens.
 

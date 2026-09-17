@@ -7,36 +7,47 @@
 
 [English](README.md) | **简体中文**
 
-> 🪐 **面向 Google Antigravity CLI (`agy`) 的轻量级多账号事务管理与排他租约监护工具。**
-> 
-> 毫秒级（<5ms）切换账号与用量概览；坚持最小介入面设计，不扫描、不覆盖会话历史（`brain/`）与扩展插件。
+> 🪐 **Google Antigravity CLI (`agy`) 的轻量多账号极速切换与配额监控工具。**  
+> 一秒免扫码切号，全账号模型配额大盘，聊天记录与插件零污染。
 
 ---
 
-## 💡 为什么需要 agy-orbit？
+## ✨ 为什么选择 agy-orbit？
 
-在日常高强度使用 Google Antigravity CLI (`agy`) 进行编程时：
-- `agy` 官方尚未原生支持便捷的多账号切换与配额轮换（官方 Issue #381 仍未合并）。
-- **全量目录镜像方案的局限性**：若尝试通过整体复制或替换 `~/.gemini/antigravity-cli/` 目录来实现切号，由于该目录包含大量动态会话记录（`brain/`）、插件生态及进程锁文件，粗粒度的全量镜像不仅产生极高磁盘 I/O 开销，还容易导致用户本地会话数据非预期丢失，并频繁在 Windows 平台触发文件独占锁冲突。
+在日常高强度使用 Google Antigravity CLI (`agy`) 编程时，经常会遇到 **429 配额用尽** 的尴尬，而官方目前尚未原生支持多账号切换。如果手动重新登录，不仅要频繁弹窗扫码，粗暴地复制或替换配置目录更极易搞丢宝贵的本地会话历史（`brain/`）。
 
-### 🛡️ 核心设计约束 (Core Design Invariants)
+`agy-orbit` (`agyo`) 为解决这些痛点而生：
 
-`agy-orbit` 遵循明确且具备可验证性的工程约束：
-1. **最小介入面（Narrow Surface）**：不触碰、不扫描、不替换 `brain/`（会话记录）与 `plugins/`，不修改全局 `HOME` / `USERPROFILE`，保障外部开发工具链的独立与稳定。
-2. **精准管理三大认证标的**：
-   - 标的 ①：`~/.gemini/oauth_creds.json`（活动 OAuth 会话令牌）
-   - 标的 ②：`~/.gemini/google_accounts.json`（账户映射表）
-   - 标的 ③：系统级密钥环（`gemini:antigravity`）
-3. **三态解耦物理拓扑**：
-   - **靶标平面 (Target Plane)**：`~/.gemini/`（最小介入面，仅读写当前活动凭据）。
-   - **存储平面 (Storage & State Plane)**：`~/.agyo/`（独立的加密存储目录，可轻松独立备份）。
-   - **易失运行期平面 (Runtime Plane)**：Windows `%LOCALAPPDATA%\agy-orbit\run` / Unix `$XDG_RUNTIME_DIR/agyo`（基于 tmpfs 内存文件系统，断电后自动清除，不会被网盘同步，避免跨机器残留锁）。
-4. **预写崩溃事务日志 (WAL)**：四阶段原子状态机（`PREPARE -> APPLY -> VERIFY -> COMMIT`），断电或崩溃启动后自动回滚恢复。
-5. **平台原生加密**：Windows 原生 DPAPI (`CryptProtectData`) / POSIX AES-256-GCM 认证加密，避免明文凭据写入磁盘。
-6. **生命周期排他租约 (Lifetime Lease) 与反向同步 (Two-Way Sync)**：
-   - `agyo run <orbit> -- agy` 在子进程生命周期内全程持有内核排他锁，防止运行期跨终端凭据冲突；
-   - 子进程退出时，自动捕获运行期刷新的最新 Token 回写 Orbit 存储，避免用旧快照覆盖新令牌。
-7. **智能双模人机工效**：交互式 TTY 敲 `agyo` 直接唤起看板与方向键 TUI 切换；脚本与管道（`agyo | grep`）自动静默降级为单行纯文本。
+- ⚡ **一秒免扫码切号**：保存多个账号快照后，只需 `agyo use <name>` 即可在毫秒级内完成切换；直接敲 `agyo` 更能呼出方向键交互菜单，上下选中回车即切。
+- 📊 **多账号配额大盘**：敲一行 `agyo quota --all`，即可聚合查看名下所有账号的 Gemini 与 Claude 实时用量百分比、健康状态及配额重置倒计时，告别盲目切号。
+- 🔒 **纯净安全零污染**：坚持最小介入面设计。**严禁且绝不触碰**会话历史（`brain/`）与插件生态，所有凭据均采用操作系统原生高强度加密（Windows DPAPI / POSIX AES-256-GCM）。
+- 🛡️ **防崩溃事务保护**：内置四阶段 WAL 预写事务机制与进程生命周期锁，即使切换中断电或多终端并发，也能保障凭据不丢失、不损坏。
+
+---
+
+## ⚡ 极速体验 (Quick Look)
+
+```bash
+# 🎯 终端交互切换：无需记参数，敲 agyo 直接唤起方向键菜单（回车即切，支持 Vim j/k）
+$ agyo
+? Select an Orbit to activate:
+  personal (dev.alice@gmail.com)
+> work     (alice@company.com)  [Active]
+  backup   (spare.alice@gmail.com)
+
+# 🚀 命令行直接切号（毫秒级生效，无需打开浏览器扫码）
+$ agyo use personal
+✔ Switched active Orbit to 'personal' (dev.alice@gmail.com).
+
+# 📊 聚合查看所有账号配额大盘与刷新倒计时（再也不怕被 429 突然打断）
+$ agyo quota --all
+┌──────────┬──────────────────────┬───────────┬───────────┬───────────┬───────────┬─────────┬────────────┐
+│ Orbit    │ Account              │ Gemini 5h │ Gemini Wk │ Claude 5h │ Claude Wk │ Health  │ Next Reset │
+├──────────┼──────────────────────┼───────────┼───────────┼───────────┼───────────┼─────────┼────────────┤
+│ * work   │ alice@company.com    │     85.0% │    100.0% │     60.0% │     90.0% │ Ready   │ 3h 42m     │
+│   person │ dev.alice@gmail.com  │      0.0% │     45.0% │     15.0% │     50.0% │ Throttl │ 45m        │
+└──────────┴──────────────────────┴───────────┴───────────┴───────────┴───────────┴─────────┴────────────┘
+```
 
 ---
 
@@ -291,14 +302,30 @@ agyo uninstall --dry-run
 
 ---
 
-## 🛡️ 安全设计约束与反病毒透明度规范 (Security Invariants)
+## 🛡️ 架构设计与安全保障 (Deep Dive)
 
+`agy-orbit` 遵循明确且具备可验证性的工程约束，保障开发者凭据安全与系统稳定：
+
+### 1. 核心架构约束 (Core Architectural Invariants)
+- **最小介入面（Narrow Surface）**：绝不触碰、扫描或替换 `brain/`（会话记录）与 `plugins/`，不篡改全局 `HOME` / `USERPROFILE`，保障外部开发工具链的绝对独立。
+- **精准管理三大认证标的**：
+  - 标的 ①：`~/.gemini/oauth_creds.json`（活动 OAuth 会话令牌）
+  - 标的 ②：`~/.gemini/google_accounts.json`（账户映射表）
+  - 标的 ③：系统级密钥环（Windows: `LegacyGeneric:target=gemini:antigravity`，macOS: Keychain，Linux: SecretService）
+- **三态解耦物理拓扑**：
+  - **靶标平面 (Target Plane)**：`~/.gemini/`（仅读写当前活动会话）。
+  - **存储平面 (Storage Plane)**：`~/.agyo/`（独立的本地加密仓库）。
+  - **瞬态运行期平面 (Runtime Plane)**：Windows `%LOCALAPPDATA%\agy-orbit\run` / Unix `$XDG_RUNTIME_DIR/agyo`（基于内存/临时文件系统，断电自毁，杜绝网盘同步锁）。
+- **预写崩溃事务日志 (WAL)**：四阶段原子状态机（`PREPARE -> APPLY -> VERIFY -> COMMIT`），断电或崩溃启动后自动回滚恢复。
+- **生命周期排他租约与反向同步**：`agyo run <orbit> -- agy` 在子进程生命周期内全程持有排他锁，防止并发凭据冲突；退出时自动同步子进程刷新的最新 Token 回写仓储。
+
+### 2. 反病毒透明度与防恶意代码规范 (Anti-Malware Invariants)
 为保持在操作系统与现代 EDR / 防病毒环境中的行为高度透明，`agyo` 严格遵循以下边界：
 1. **仅访问审计标的 (Scoped Credential Access)**：仅精确读取单个合法目标 `gemini:antigravity`，不枚举或扫描系统其他凭据。
 2. **零进程注入 (No Process Injection)**：不调用 `CreateRemoteThread` 或向子进程注入动态库。
 3. **官方标准调用 (Documented System APIs Only)**：完全基于操作系统官方文档化的系统调用。
 4. **零加壳压缩 (No Binary Packing)**：零加壳（不用 UPX/Themida），保持 Rust 确定性原生二进制。
-5. **零非必要网络交互 (Zero Outbound Telemetry)**：不向任何外部网络上传 Token、Secret 或会话数据。
+5. **零非必要网络交互 (Zero Outbound Telemetry)**：除 Google 官方配额及 GitHub 版本检查外，绝不向任何外部网络上传 Token、Secret 或会话数据。
 6. **零静默持久化 (No Silent Persistence)**：不写入任何自启动注册表项或创建隐蔽后台驻留服务。
 7. **只读配额凭据不变量 (Read-Only Quota Invariant)**：`agyo quota` 仅读取现有有效 access token，不自行刷新 Token，避免风控与 Token 竞争吊销。
 
