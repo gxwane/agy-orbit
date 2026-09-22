@@ -23,3 +23,7 @@ jobs:
         uses: actions-rust-lang/audit@v1
         with:
           createIssues: false
+          # RUSTSEC-2025-0057: fxhash is unmaintained but is an indirect dep via
+          # inquire 0.7.x which has not yet migrated away from it. Ignore until
+          # inquire releases a version that drops fxhash.
+          ignore: RUSTSEC-2025-0057
