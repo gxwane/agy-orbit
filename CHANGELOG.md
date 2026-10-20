@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-20
+
+### Security
+- **Dependency Vulnerability Remediation (`cargo-audit`)**:
+  - Upgraded `rustls` from `0.23.45` to `0.23.46` resolving:
+    - `RUSTSEC-2026-0346`: TLS session secret exposure in `Debug` implementations.
+    - `RUSTSEC-2026-0347`: Buffered application data sent to outer server after ECH rejection.
+    - `RUSTSEC-2026-0348`: Brotli certificate decompression DoS.
+    - `RUSTSEC-2026-0349`: Unauthenticated ServerHello key exchange downgrade.
+  - Upgraded `zip` from `2.4.2` (`2.2` spec) to `9.0.5` (`9.0` spec) resolving:
+    - `RUSTSEC-2026-0367`: Insecure preservation of SUID/SGID bits during extraction.
+    - `RUSTSEC-2026-0368`: Symlink extraction path traversal outside destination directory.
+    - `RUSTSEC-2026-0369`: Unconfined Unix permissions applied through extracted symlinks.
+
 ## [0.3.1] - 2026-09-17
 
 ### Fixed

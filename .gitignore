@@ -14,6 +14,7 @@ AGENTS.md
 *.patch
 
 # AI Assistant & Tool Local Contexts
+.agents/
 .gemini/
 .cursor/
 .windsurf/
