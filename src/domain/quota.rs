@@ -24,7 +24,7 @@ pub struct QuotaSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaBucket {
-    #[serde(alias = "bucket_id", default)]
+    #[serde(alias = "bucket_id", alias = "modelId", alias = "model_id", default)]
     pub bucket_id: String,
 
     #[serde(alias = "display_name", default)]
@@ -50,6 +50,10 @@ pub struct QuotaBucket {
     #[serde(alias = "reset_time", default)]
     pub reset_time: Option<DateTime<Utc>>,
 
+    /// Token type indicator from Google API (e.g. "WTUS" for Weekly Token Usage System)
+    #[serde(alias = "token_type", alias = "tokenType", default)]
+    pub token_type: Option<String>,
+
     /// Catch-all for any future experimental fields Google might introduce
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -68,6 +72,22 @@ impl QuotaBucket {
     /// Check whether the bucket is explicitly marked as disabled by Google policy.
     pub fn is_disabled(&self) -> bool {
         self.disabled == Some(true)
+    }
+
+    /// Check whether this bucket represents a weekly quota window via explicit window name or token_type.
+    pub fn is_weekly(&self) -> bool {
+        self.window
+            .as_deref()
+            .map(|w| w.to_lowercase().contains("week"))
+            .unwrap_or(false)
+            || self.token_type.as_deref() == Some("WTUS")
+            || self.extra.get("tokenType").and_then(|v| v.as_str()) == Some("WTUS")
+    }
+
+    /// Check whether this bucket represents a 5-hour quota window.
+    pub fn is_five_hour(&self) -> bool {
+        let win = self.window.as_deref().unwrap_or("").to_lowercase();
+        win.contains("5") || win.contains("five")
     }
 
     /// Return the remaining percentage (0.0% to 100.0%).
@@ -211,5 +231,23 @@ mod tests {
         assert_eq!(bucket.metric_state(), MetricState::Disabled);
         assert_eq!(bucket.metric_state().percentage(), 0.0);
         assert!(bucket.metric_state().is_disabled());
+    }
+
+    #[test]
+    fn test_quota_bucket_wtus_and_model_id_parsing() {
+        let json = r#"{
+            "modelId": "gemini-2.5-flash",
+            "tokenType": "WTUS",
+            "remainingFraction": 0.15541022,
+            "resetTime": "2026-10-25T16:12:18Z"
+        }"#;
+
+        let bucket: QuotaBucket = serde_json::from_str(json).unwrap();
+        assert_eq!(bucket.bucket_id, "gemini-2.5-flash");
+        assert_eq!(bucket.effective_name(), "gemini-2.5-flash");
+        assert_eq!(bucket.token_type.as_deref(), Some("WTUS"));
+        assert!(bucket.is_weekly());
+        assert!(!bucket.is_five_hour());
+        assert!((bucket.remaining_percentage() - 15.541022).abs() < 1e-4);
     }
 }

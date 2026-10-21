@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-21
+
+### Fixed
+- **Google Cloud Code PA API Resilience & Gemini Quota Restoration**:
+  - Implemented non-fatal supplementary fetch for per-model quota buckets (`retrieveUserQuota`) when Google's daily cluster drops the aggregated `"Gemini Models"` group in `retrieveUserQuotaSummary`.
+  - Added native `modelId` and `token_type` (`WTUS`) entity deserialization in `QuotaBucket`.
+  - Added deterministic weekly quota detection via `is_weekly()` without fragile dynamic deadline thresholds.
+  - Added clean model pool folding in single-account CLI quota view (`agyo quota`) to prevent visual pollution from repeated identical model limits.
+  - Extended network budget to 8.0s (4.0s connect / 4.0s read) to improve resilience across HTTP/HTTPS proxies.
+
+### Security
+- **Dependency Vulnerability Remediation (`cargo-audit`)**:
+  - Upgraded `rustls-webpki` to `0.103.16` resolving `RUSTSEC-2026-0382`.
+  - Upgraded `webpki-roots` to `1.0.10` resolving `RUSTSEC-2026-0381`.
+
 ## [0.3.2] - 2026-10-20
 
 ### Security

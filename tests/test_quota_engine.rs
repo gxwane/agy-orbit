@@ -64,6 +64,7 @@ fn sample_quota_summary() -> QuotaSummary {
                     remaining_amount: None,
                     disabled: Some(false),
                     reset_time: Some(Utc::now() + Duration::hours(3)),
+                    token_type: None,
                     extra: Default::default(),
                 },
                 QuotaBucket {
@@ -75,6 +76,7 @@ fn sample_quota_summary() -> QuotaSummary {
                     remaining_amount: None,
                     disabled: Some(false),
                     reset_time: Some(Utc::now() + Duration::days(4)),
+                    token_type: None,
                     extra: Default::default(),
                 },
             ],
@@ -507,6 +509,7 @@ fn test_query_all_quotas_mc_exhausted_scenario() {
                             remaining_amount: None,
                             disabled: None,
                             reset_time: Some(self.reset_wk),
+                            token_type: None,
                             extra: Default::default(),
                         },
                         QuotaBucket {
@@ -518,6 +521,7 @@ fn test_query_all_quotas_mc_exhausted_scenario() {
                             remaining_amount: None,
                             disabled: Some(true),
                             reset_time: Some(self.reset_5h),
+                            token_type: None,
                             extra: Default::default(),
                         },
                     ],

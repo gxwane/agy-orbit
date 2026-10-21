@@ -901,23 +901,25 @@ pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
         let is_gemini = name_lower.contains("gemini");
         let is_claude = name_lower.contains("claude") || name_lower.contains("gpt");
 
+        let is_five_hour = bucket.is_five_hour()
+            || win_lower.contains("5")
+            || name_lower.contains("5 hour")
+            || name_lower.contains("five hour");
+
+        let is_weekly =
+            bucket.is_weekly() || win_lower.contains("week") || name_lower.contains("week");
+
         if is_gemini {
-            if win_lower.contains("5")
-                || name_lower.contains("5 hour")
-                || name_lower.contains("five hour")
-            {
+            if is_five_hour {
                 metrics.gemini_5h_pct = merge_metric(metrics.gemini_5h_pct, state);
-            } else if win_lower.contains("week") || name_lower.contains("week") {
+            } else if is_weekly {
                 metrics.gemini_wk_pct = merge_metric(metrics.gemini_wk_pct, state);
             }
         }
         if is_claude {
-            if win_lower.contains("5")
-                || name_lower.contains("5 hour")
-                || name_lower.contains("five hour")
-            {
+            if is_five_hour {
                 metrics.claude_5h_pct = merge_metric(metrics.claude_5h_pct, state);
-            } else if win_lower.contains("week") || name_lower.contains("week") {
+            } else if is_weekly {
                 metrics.claude_wk_pct = merge_metric(metrics.claude_wk_pct, state);
             }
         }
@@ -1047,6 +1049,7 @@ mod tests {
                             remaining_amount: None,
                             disabled: None,
                             reset_time: Some(reset_wk),
+                            token_type: None,
                             extra: Default::default(),
                         },
                         QuotaBucket {
@@ -1058,6 +1061,7 @@ mod tests {
                             remaining_amount: None,
                             disabled: Some(true),
                             reset_time: Some(reset_5h),
+                            token_type: None,
                             extra: Default::default(),
                         },
                     ],
@@ -1075,6 +1079,7 @@ mod tests {
                             remaining_amount: None,
                             disabled: None,
                             reset_time: Some(reset_wk + Duration::hours(2)),
+                            token_type: None,
                             extra: Default::default(),
                         },
                         QuotaBucket {
@@ -1086,6 +1091,7 @@ mod tests {
                             remaining_amount: None,
                             disabled: Some(true),
                             reset_time: Some(reset_5h),
+                            token_type: None,
                             extra: Default::default(),
                         },
                     ],
@@ -1123,6 +1129,7 @@ mod tests {
                     remaining_amount: None,
                     disabled: Some(false),
                     reset_time: Some(now + Duration::hours(5)),
+                    token_type: None,
                     extra: Default::default(),
                 }],
             }],
@@ -1200,5 +1207,60 @@ mod tests {
             resolve_row_status(false, "test_orbit", &view_network_err, &metrics),
             RowStatus::Error(_)
         ));
+    }
+
+    #[test]
+    fn test_extract_summary_metrics_with_raw_wtus_gemini_buckets() {
+        let now = Utc::now();
+        let reset_wk = now + Duration::days(4);
+        let reset_5h = now + Duration::hours(3);
+
+        let summary = QuotaSummary {
+            groups: vec![QuotaGroup {
+                display_name: Some("Claude and GPT models".into()),
+                description: None,
+                buckets: vec![
+                    QuotaBucket {
+                        bucket_id: "3p-weekly".into(),
+                        window: Some("weekly".into()),
+                        remaining_fraction: Some(1.0),
+                        reset_time: Some(reset_wk),
+                        ..Default::default()
+                    },
+                    QuotaBucket {
+                        bucket_id: "3p-5h".into(),
+                        window: Some("5h".into()),
+                        remaining_fraction: Some(1.0),
+                        reset_time: Some(reset_5h),
+                        ..Default::default()
+                    },
+                ],
+            }],
+            buckets: vec![
+                QuotaBucket {
+                    bucket_id: "gemini-2.5-flash".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(0.155),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                },
+                QuotaBucket {
+                    bucket_id: "gemini-3.8-flash-tiered".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(0.155),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                },
+            ],
+            description: None,
+            fetched_at: Some(now),
+        };
+
+        let metrics = extract_summary_metrics(&summary);
+        assert_eq!(metrics.gemini_wk_pct, Some(MetricState::Available(15.5)));
+        assert_eq!(metrics.gemini_5h_pct, None);
+        assert_eq!(metrics.claude_5h_pct, Some(MetricState::Available(100.0)));
+        assert_eq!(metrics.claude_wk_pct, Some(MetricState::Available(100.0)));
+        assert_eq!(metrics.next_reset, Some(reset_wk));
     }
 }

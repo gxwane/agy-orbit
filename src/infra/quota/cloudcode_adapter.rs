@@ -11,9 +11,9 @@ const DEFAULT_ENDPOINTS: &[&str] = &[
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 ];
 
-const GLOBAL_BUDGET_SECS: u64 = 5;
-const CONNECT_TIMEOUT_SECS: u64 = 2;
-const READ_TIMEOUT_SECS: u64 = 3;
+const GLOBAL_BUDGET_SECS: u64 = 8;
+const CONNECT_TIMEOUT_SECS: u64 = 4;
+const READ_TIMEOUT_SECS: u64 = 4;
 
 #[derive(Clone)]
 pub struct CloudCodeQuotaAdapter {
@@ -106,6 +106,30 @@ impl QuotaPort for CloudCodeQuotaAdapter {
                         OrbitError::QuotaHttp(format!("Failed to parse Google Quota JSON: {e}"))
                     })?;
                     summary.fetched_at = Some(Utc::now());
+
+                    // Non-fatal supplementary fetch: if summary lacks Gemini models,
+                    // attempt to fetch raw per-model quota buckets from retrieveUserQuota
+                    // on the same host without failing the primary response if it encounters an issue.
+                    if !summary_has_gemini(&summary)
+                        && endpoint.contains("retrieveUserQuotaSummary")
+                    {
+                        let raw_endpoint =
+                            endpoint.replace("retrieveUserQuotaSummary", "retrieveUserQuota");
+                        let sub_remaining = deadline.saturating_duration_since(Instant::now());
+                        if sub_remaining.as_millis() > 300 {
+                            let sub_req = agent
+                                .post(&raw_endpoint)
+                                .set("Authorization", &format!("Bearer {access_token}"))
+                                .set("Content-Type", "application/json")
+                                .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)");
+                            if let Ok(sub_resp) = sub_req.send_string("{}")
+                                && let Ok(sub_summary) = sub_resp.into_json::<QuotaSummary>()
+                            {
+                                summary.buckets.extend(sub_summary.buckets);
+                            }
+                        }
+                    }
+
                     return Ok(summary);
                 }
                 Err(ureq::Error::Status(401, _)) => {
@@ -152,9 +176,21 @@ impl QuotaPort for CloudCodeQuotaAdapter {
     }
 }
 
+fn summary_has_gemini(summary: &QuotaSummary) -> bool {
+    summary.groups.iter().any(|g| {
+        let name = g.display_name.as_deref().unwrap_or("").to_lowercase();
+        name.contains("gemini")
+    }) || summary.buckets.iter().any(|b| {
+        let name = b.effective_name().to_lowercase();
+        name.contains("gemini")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn test_default_endpoints_order_prioritizes_daily_cloudcode() {
@@ -286,5 +322,104 @@ mod tests {
             0,
             "403 on endpoint1 MUST immediately fail-fast and NEVER cascade to endpoint2"
         );
+    }
+
+    #[test]
+    fn test_non_fatal_supplementary_fetch_when_gemini_missing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                let body = if req_str.contains("retrieveUserQuotaSummary") {
+                    r#"{"groups":[{"displayName":"Claude and GPT models","buckets":[]}]}"#
+                } else if req_str.contains("retrieveUserQuota") {
+                    r#"{"buckets":[{"modelId":"gemini-2.5-flash","tokenType":"WTUS","remainingFraction":0.155}]}"#
+                } else {
+                    "{}"
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut drain = [0u8; 128];
+                while let Ok(n) = stream.read(&mut drain) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let adapter = CloudCodeQuotaAdapter::without_proxy(vec![format!(
+            "http://127.0.0.1:{port}/v1internal:retrieveUserQuotaSummary"
+        )]);
+
+        let res = adapter.fetch_user_quota("test_token").unwrap();
+        assert_eq!(res.groups.len(), 1);
+        assert_eq!(
+            res.groups[0].display_name.as_deref(),
+            Some("Claude and GPT models")
+        );
+        assert_eq!(res.buckets.len(), 1);
+        assert_eq!(res.buckets[0].bucket_id, "gemini-2.5-flash");
+        assert_eq!(res.buckets[0].token_type.as_deref(), Some("WTUS"));
+    }
+
+    #[test]
+    fn test_supplementary_fetch_failure_degrades_gracefully() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                if req_str.contains("retrieveUserQuotaSummary") {
+                    let body =
+                        r#"{"groups":[{"displayName":"Claude and GPT models","buckets":[]}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                } else {
+                    let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut drain = [0u8; 128];
+                while let Ok(n) = stream.read(&mut drain) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let adapter = CloudCodeQuotaAdapter::without_proxy(vec![format!(
+            "http://127.0.0.1:{port}/v1internal:retrieveUserQuotaSummary"
+        )]);
+
+        let res = adapter.fetch_user_quota("test_token").unwrap();
+        assert_eq!(res.groups.len(), 1);
+        assert_eq!(
+            res.groups[0].display_name.as_deref(),
+            Some("Claude and GPT models")
+        );
+        assert_eq!(res.buckets.len(), 0);
     }
 }

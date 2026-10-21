@@ -58,14 +58,73 @@ pub fn render_quota_view(data: &QuotaViewData) {
 
     // Render top-level buckets if present and not already covered by groups
     if !summary.buckets.is_empty() {
-        if !summary.groups.is_empty() {
+        let (gemini_shared, mut other_buckets): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) =
+            summary.buckets.iter().partition(|b| {
+                let name = b.effective_name().to_lowercase();
+                name.contains("gemini") && b.is_weekly()
+            });
+
+        if gemini_shared.len() >= 2 {
+            let first = gemini_shared[0];
+            let same_pool = gemini_shared.iter().all(|b| {
+                (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                    && b.reset_time == first.reset_time
+            });
+
+            if same_pool {
+                println!(
+                    "{}",
+                    "Gemini Models (Shared Weekly Pool)".bold().underline()
+                );
+                let model_names: Vec<&str> =
+                    gemini_shared.iter().map(|b| b.effective_name()).collect();
+                println!(
+                    "  {}",
+                    format!("Models: {}", model_names.join(", ")).dimmed()
+                );
+
+                let mut rep = first.clone();
+                rep.display_name = Some("Weekly Limit Remaining".into());
+                rep.window = Some("weekly".into());
+                render_bucket_row(&rep, "  ");
+                rendered_any = true;
+                println!();
+            } else {
+                other_buckets.extend(gemini_shared);
+            }
+        } else {
+            other_buckets.extend(gemini_shared);
+        }
+
+        let has_claude_group = summary.groups.iter().any(|g| {
+            let n = g.display_name.as_deref().unwrap_or("").to_lowercase();
+            n.contains("claude") || n.contains("gpt")
+        });
+
+        // Only show internal/additional buckets if they have consumed quota (<99.9%)
+        // or explicitly have display names / reset times, avoiding internal token clutter
+        let significant_others: Vec<&&QuotaBucket> = other_buckets
+            .iter()
+            .filter(|b| {
+                let id = b.bucket_id.to_lowercase();
+                if has_claude_group && (id.contains("claude") || id.contains("gpt")) {
+                    return false;
+                }
+                let is_internal_stub = (id.starts_with("chat_") || id.starts_with("tab_"))
+                    && b.remaining_percentage() >= 99.9
+                    && b.reset_time.is_none();
+                !is_internal_stub
+            })
+            .collect();
+
+        if !significant_others.is_empty() {
             println!("{}", "Additional Quota:".bold().underline());
+            for bucket in significant_others {
+                render_bucket_row(bucket, "  ");
+                rendered_any = true;
+            }
+            println!();
         }
-        for bucket in &summary.buckets {
-            render_bucket_row(bucket, "  ");
-            rendered_any = true;
-        }
-        println!();
     }
 
     if !rendered_any {
