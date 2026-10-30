@@ -55,6 +55,7 @@ pub struct MultiQuotaRowData {
     pub is_stale: bool,
     pub gemini_5h_pct: Option<MetricState>,
     pub gemini_wk_pct: Option<MetricState>,
+    pub argon_wk_pct: Option<MetricState>,
     pub claude_5h_pct: Option<MetricState>,
     pub claude_wk_pct: Option<MetricState>,
     pub status: RowStatus,
@@ -65,6 +66,7 @@ pub struct MultiQuotaRowData {
 pub struct SummaryMetrics {
     pub gemini_5h_pct: Option<MetricState>,
     pub gemini_wk_pct: Option<MetricState>,
+    pub argon_wk_pct: Option<MetricState>,
     pub claude_5h_pct: Option<MetricState>,
     pub claude_wk_pct: Option<MetricState>,
     pub next_reset: Option<DateTime<Utc>>,
@@ -144,12 +146,58 @@ impl<'a> QuotaService<'a> {
         self
     }
 
+    fn resolve_orbit_snapshot_identity(
+        &self,
+        orbit_name: &OrbitName,
+        expected_email: &str,
+    ) -> Result<ResolvedIdentity> {
+        let (snapshot, sealed_secret) = self.storage.load_orbit_snapshot(orbit_name)?;
+        let unsealed_secret = if let Some(vault) = self.vault {
+            vault
+                .unseal(&sealed_secret)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+        } else {
+            None
+        };
+
+        let resolved = resolve_credentials(
+            unsealed_secret.as_deref(),
+            snapshot.oauth_creds.as_deref(),
+            snapshot.google_accounts.as_deref(),
+        );
+
+        // Guard against saved snapshots where keyring_secret had no id_token and belonged to a
+        // different account than the snapshot's oauth_creds.json (whose id_token matches expected_email).
+        if let Some(ref id) = resolved
+            && id.email.is_none()
+            && let Some(disk_id) = resolve_credentials(
+                None,
+                snapshot.oauth_creds.as_deref(),
+                snapshot.google_accounts.as_deref(),
+            )
+            && disk_id
+                .email
+                .as_deref()
+                .is_some_and(|e| e.eq_ignore_ascii_case(expected_email))
+        {
+            return Ok(disk_id);
+        }
+
+        resolved.ok_or_else(|| {
+            OrbitError::CredentialValidation(format!(
+                "No valid access token found in orbit '{}'",
+                orbit_name
+            ))
+        })
+    }
+
     fn resolve_live_identity(&self) -> Result<ResolvedIdentity> {
         let keyring_secret = self.keyring.and_then(|k| k.get_secret().ok());
         let oauth_bytes = self.target.read_oauth_creds()?.unwrap_or_default();
         let accounts_bytes = self.target.read_google_accounts()?.unwrap_or_default();
 
-        resolve_credentials(
+        let mut resolved = resolve_credentials(
             keyring_secret.as_deref(),
             (!oauth_bytes.is_empty()).then_some(&oauth_bytes),
             (!accounts_bytes.is_empty()).then_some(&accounts_bytes),
@@ -158,7 +206,38 @@ impl<'a> QuotaService<'a> {
             OrbitError::CredentialValidation(
                 "No valid access token found in OS Keyring or ~/.gemini/oauth_creds.json. Run `agy` to authenticate.".into(),
             )
-        })
+        })?;
+
+        // When OS Keyring lacks id_token and its refresh_token conflicts with disk oauth_creds.json,
+        // match the live refresh_token against saved orbits in the vault/index to attribute identity accurately.
+        if resolved.email.is_none() {
+            if let Some(ref live_rt) = resolved.refresh_token {
+                let live_rt_trim = live_rt.trim();
+                if !live_rt_trim.is_empty()
+                    && let Ok(index) = self.storage.load_index()
+                {
+                    for (name, record) in &index.orbits {
+                        if let Ok(orbit_name) = OrbitName::new(name)
+                            && let Ok(orbit_id) =
+                                self.resolve_orbit_snapshot_identity(&orbit_name, &record.email)
+                            && orbit_id.refresh_token.as_deref().map(str::trim)
+                                == Some(live_rt_trim)
+                        {
+                            resolved.email = Some(record.email.clone());
+                            if resolved.client_id.is_none() {
+                                resolved.client_id = orbit_id.client_id;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if resolved.email.is_none() {
+                resolved.email = Some("unknown".to_string());
+            }
+        }
+
+        Ok(resolved)
     }
 
     fn resolve_target_auth(&self, target_orbit: Option<&str>) -> Result<ResolvedTargetAuth> {
@@ -208,27 +287,7 @@ impl<'a> QuotaService<'a> {
                     is_expiring_soon,
                 })
             } else {
-                let (snapshot, sealed_secret) = self.storage.load_orbit_snapshot(&orbit_name)?;
-                let unsealed_secret = if let Some(vault) = self.vault {
-                    vault
-                        .unseal(&sealed_secret)
-                        .ok()
-                        .and_then(|b| String::from_utf8(b).ok())
-                } else {
-                    None
-                };
-                let resolved = resolve_credentials(
-                    unsealed_secret.as_deref(),
-                    snapshot.oauth_creds.as_deref(),
-                    snapshot.google_accounts.as_deref(),
-                );
-
-                let id = resolved.ok_or_else(|| {
-                    OrbitError::CredentialValidation(format!(
-                        "No valid access token found in orbit '{}'",
-                        orbit_name
-                    ))
-                })?;
+                let id = self.resolve_orbit_snapshot_identity(&orbit_name, &record.email)?;
                 let is_expiring_soon = id.is_expiring_soon(60);
 
                 Ok(ResolvedTargetAuth {
@@ -575,6 +634,7 @@ impl<'a> QuotaService<'a> {
                         is_stale: view_data.is_stale,
                         gemini_5h_pct: metrics.gemini_5h_pct,
                         gemini_wk_pct: metrics.gemini_wk_pct,
+                        argon_wk_pct: metrics.argon_wk_pct,
                         claude_5h_pct: metrics.claude_5h_pct,
                         claude_wk_pct: metrics.claude_wk_pct,
                         status: health,
@@ -588,6 +648,7 @@ impl<'a> QuotaService<'a> {
                     is_stale: false,
                     gemini_5h_pct: None,
                     gemini_wk_pct: None,
+                    argon_wk_pct: None,
                     claude_5h_pct: None,
                     claude_wk_pct: None,
                     status: match e {
@@ -675,6 +736,7 @@ impl<'a> QuotaService<'a> {
                                         is_stale: false,
                                         gemini_5h_pct: metrics.gemini_5h_pct,
                                         gemini_wk_pct: metrics.gemini_wk_pct,
+                                        argon_wk_pct: metrics.argon_wk_pct,
                                         claude_5h_pct: metrics.claude_5h_pct,
                                         claude_wk_pct: metrics.claude_wk_pct,
                                         status: health,
@@ -705,6 +767,7 @@ impl<'a> QuotaService<'a> {
                                         is_stale: view_data.is_stale,
                                         gemini_5h_pct: metrics.gemini_5h_pct,
                                         gemini_wk_pct: metrics.gemini_wk_pct,
+                                        argon_wk_pct: metrics.argon_wk_pct,
                                         claude_5h_pct: metrics.claude_5h_pct,
                                         claude_wk_pct: metrics.claude_wk_pct,
                                         status: health,
@@ -758,6 +821,7 @@ impl<'a> QuotaService<'a> {
                                         is_stale: false,
                                         gemini_5h_pct: None,
                                         gemini_wk_pct: None,
+                                        argon_wk_pct: None,
                                         claude_5h_pct: None,
                                         claude_wk_pct: None,
                                         status,
@@ -776,6 +840,7 @@ impl<'a> QuotaService<'a> {
                                 is_stale: false,
                                 gemini_5h_pct: None,
                                 gemini_wk_pct: None,
+                                argon_wk_pct: None,
                                 claude_5h_pct: None,
                                 claude_wk_pct: None,
                                 status: RowStatus::Error("Worker thread panicked".to_string()),
@@ -826,6 +891,7 @@ pub fn determine_account_health(metrics: &SummaryMetrics) -> RowStatus {
     let all_metrics = [
         metrics.gemini_5h_pct,
         metrics.gemini_wk_pct,
+        metrics.argon_wk_pct,
         metrics.claude_5h_pct,
         metrics.claude_wk_pct,
     ];
@@ -892,24 +958,31 @@ pub fn resolve_row_status(
 /// Extract standard metric states and calculate smart unblocking next reset.
 pub fn extract_summary_metrics(summary: &QuotaSummary) -> SummaryMetrics {
     let mut metrics = SummaryMetrics::default();
+    let now = summary.fetched_at.unwrap_or_else(Utc::now);
 
     let mut check_bucket = |group_name: &str, bucket: &QuotaBucket| {
         let name_lower = format!("{} {}", group_name, bucket.effective_name()).to_lowercase();
         let win_lower = bucket.window.as_deref().unwrap_or("").to_lowercase();
         let state = bucket.metric_state();
 
-        let is_gemini = name_lower.contains("gemini");
-        let is_claude = name_lower.contains("claude") || name_lower.contains("gpt");
+        let is_argon = name_lower.contains("argon") || bucket.is_argon();
+        let is_gemini = !is_argon && (name_lower.contains("gemini") || bucket.is_gemini_standard());
+        let is_claude = name_lower.contains("claude")
+            || name_lower.contains("gpt")
+            || bucket.is_claude_or_gpt();
 
-        let is_five_hour = bucket.is_five_hour()
+        let is_five_hour = bucket.is_five_hour_relative(now)
             || win_lower.contains("5")
             || name_lower.contains("5 hour")
             || name_lower.contains("five hour");
 
-        let is_weekly =
-            bucket.is_weekly() || win_lower.contains("week") || name_lower.contains("week");
+        let is_weekly = bucket.is_weekly_relative(now)
+            || win_lower.contains("week")
+            || name_lower.contains("week");
 
-        if is_gemini {
+        if is_argon {
+            metrics.argon_wk_pct = merge_metric(metrics.argon_wk_pct, state);
+        } else if is_gemini {
             if is_five_hour {
                 metrics.gemini_5h_pct = merge_metric(metrics.gemini_5h_pct, state);
             } else if is_weekly {
@@ -1262,5 +1335,86 @@ mod tests {
         assert_eq!(metrics.claude_5h_pct, Some(MetricState::Available(100.0)));
         assert_eq!(metrics.claude_wk_pct, Some(MetricState::Available(100.0)));
         assert_eq!(metrics.next_reset, Some(reset_wk));
+    }
+
+    #[test]
+    fn test_extract_summary_metrics_dual_gemini_5h_and_weekly() {
+        let now = Utc::now();
+        let reset_5h = now + Duration::hours(4);
+        let reset_wk = now + Duration::days(6);
+
+        let summary = QuotaSummary {
+            groups: vec![],
+            buckets: vec![
+                QuotaBucket {
+                    bucket_id: "gemini-2.5-flash".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(0.85),
+                    reset_time: Some(reset_5h),
+                    ..Default::default()
+                },
+                QuotaBucket {
+                    bucket_id: "gemini-3.8-flash-tiered".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(0.40),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                },
+            ],
+            description: None,
+            fetched_at: Some(now),
+        };
+
+        let metrics = extract_summary_metrics(&summary);
+        assert_eq!(metrics.gemini_5h_pct, Some(MetricState::Available(85.0)));
+        assert_eq!(metrics.gemini_wk_pct, Some(MetricState::Available(40.0)));
+        assert_eq!(metrics.next_reset, Some(reset_5h));
+    }
+
+    #[test]
+    fn test_extract_summary_metrics_argon_isolation() {
+        let now = Utc::now();
+        let reset_wk = now + Duration::days(6);
+
+        let summary = QuotaSummary {
+            groups: vec![QuotaGroup {
+                display_name: Some("GEMINI 4 ARGON".into()),
+                description: Some(
+                    "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.".into(),
+                ),
+                buckets: vec![QuotaBucket {
+                    bucket_id: "argon-weekly".into(),
+                    display_name: Some("Gemini 4 Argon Weekly Limit".into()),
+                    window: Some("weekly".into()),
+                    remaining_fraction: Some(0.2197),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                }],
+            }],
+            buckets: vec![
+                QuotaBucket {
+                    bucket_id: "gemini-3.8-flash-tiered".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(1.0),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                },
+                QuotaBucket {
+                    bucket_id: "gemini-4-argon-high".into(),
+                    token_type: Some("WTUS".into()),
+                    remaining_fraction: Some(0.2197),
+                    reset_time: Some(reset_wk),
+                    ..Default::default()
+                },
+            ],
+            description: None,
+            fetched_at: Some(now),
+        };
+
+        let metrics = extract_summary_metrics(&summary);
+        // Standard Gemini weekly pool MUST remain 100.0%, NOT contaminated by Argon!
+        assert_eq!(metrics.gemini_wk_pct, Some(MetricState::Available(100.0)));
+        // Argon weekly pool is isolated in argon_wk_pct
+        assert_eq!(metrics.argon_wk_pct, Some(MetricState::Available(21.97)));
     }
 }

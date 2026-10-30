@@ -5,10 +5,10 @@ use chrono::Utc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_ENDPOINTS: &[&str] = &[
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+    "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
 ];
 
 const GLOBAL_BUDGET_SECS: u64 = 8;
@@ -52,6 +52,117 @@ impl CloudCodeQuotaAdapter {
             endpoints,
             disable_proxy_for_test: true,
         }
+    }
+}
+
+const DEFAULT_CAIC_PROJECT: &str = "aicode-consumers";
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadCodeAssistResponse {
+    #[serde(default)]
+    cloudaicompanion_project: Option<String>,
+}
+
+impl CloudCodeQuotaAdapter {
+    fn request_body_for_endpoint(endpoint: &str, project: &str) -> String {
+        if endpoint.contains("retrieveUserQuotaSummary") {
+            serde_json::json!({ "project": project }).to_string()
+        } else {
+            "{}".to_string()
+        }
+    }
+
+    fn resolve_project_via_load_code_assist(
+        &self,
+        base_endpoint: &str,
+        access_token: &str,
+        try_proxy: bool,
+        remaining: Duration,
+    ) -> Option<String> {
+        if remaining.as_millis() < 300 {
+            return None;
+        }
+        let lca_endpoint = if base_endpoint.contains("retrieveUserQuotaSummary") {
+            base_endpoint.replace("retrieveUserQuotaSummary", "loadCodeAssist")
+        } else if base_endpoint.contains("fetchAvailableModels") {
+            base_endpoint.replace("fetchAvailableModels", "loadCodeAssist")
+        } else {
+            return None;
+        };
+
+        let agent = ureq::builder()
+            .try_proxy_from_env(try_proxy)
+            .timeout_connect(Duration::from_millis(1000).min(remaining))
+            .timeout_read(Duration::from_millis(1500).min(remaining))
+            .build();
+        let body =
+            r#"{"metadata":{"ideType":"ANTIGRAVITY","platform":"WINDOWS","pluginType":"GEMINI"}}"#;
+        let resp = agent
+            .post(&lca_endpoint)
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .set("Content-Type", "application/json")
+            .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+            .send_string(body)
+            .ok()?;
+        let parsed: LoadCodeAssistResponse = resp.into_json().ok()?;
+        parsed
+            .cloudaicompanion_project
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+    }
+
+    fn fetch_quota_summary_supplementary(
+        &self,
+        summary_endpoint: &str,
+        access_token: &str,
+        try_proxy: bool,
+        deadline: Instant,
+    ) -> Option<QuotaSummary> {
+        let sub_remaining = deadline.saturating_duration_since(Instant::now());
+        if sub_remaining.as_millis() <= 300 {
+            return None;
+        }
+        let sub_agent = ureq::builder()
+            .try_proxy_from_env(try_proxy)
+            .timeout_connect(Duration::from_millis(1000).min(sub_remaining))
+            .timeout_read(Duration::from_millis(2000).min(sub_remaining))
+            .build();
+
+        let primary_body = Self::request_body_for_endpoint(summary_endpoint, DEFAULT_CAIC_PROJECT);
+        if let Ok(sub_resp) = sub_agent
+            .post(summary_endpoint)
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .set("Content-Type", "application/json")
+            .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+            .send_string(&primary_body)
+            && let Ok(sub_summary) = sub_resp.into_json::<QuotaSummary>()
+        {
+            return Some(sub_summary);
+        }
+
+        // Fallback: resolve custom cloudaicompanionProject via loadCodeAssist if default project was rejected
+        let rem_after = deadline.saturating_duration_since(Instant::now());
+        if let Some(custom_proj) = self.resolve_project_via_load_code_assist(
+            summary_endpoint,
+            access_token,
+            try_proxy,
+            rem_after,
+        ) && custom_proj != DEFAULT_CAIC_PROJECT
+        {
+            let retry_body = Self::request_body_for_endpoint(summary_endpoint, &custom_proj);
+            if let Ok(retry_resp) = sub_agent
+                .post(summary_endpoint)
+                .set("Authorization", &format!("Bearer {access_token}"))
+                .set("Content-Type", "application/json")
+                .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+                .send_string(&retry_body)
+                && let Ok(sub_summary) = retry_resp.into_json::<QuotaSummary>()
+            {
+                return Some(sub_summary);
+            }
+        }
+        None
     }
 }
 
@@ -100,24 +211,66 @@ impl QuotaPort for CloudCodeQuotaAdapter {
                 .set("Content-Type", "application/json")
                 .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)");
 
-            match request.send_string("{}") {
-                Ok(response) => {
-                    let mut summary: QuotaSummary = response.into_json().map_err(|e| {
-                        OrbitError::QuotaHttp(format!("Failed to parse Google Quota JSON: {e}"))
-                    })?;
-                    summary.fetched_at = Some(Utc::now());
+            let body = Self::request_body_for_endpoint(endpoint, DEFAULT_CAIC_PROJECT);
 
-                    // Non-fatal supplementary fetch: if summary lacks Gemini models,
-                    // attempt to fetch raw per-model quota buckets from retrieveUserQuota
-                    // on the same host without failing the primary response if it encounters an issue.
-                    if !summary_has_gemini(&summary)
+            match request.send_string(&body) {
+                Ok(response) => {
+                    let now = Utc::now();
+                    let mut summary = if endpoint.contains("fetchAvailableModels") {
+                        let models_resp: crate::domain::quota::AvailableModelsResponse =
+                            response.into_json().map_err(|e| {
+                                OrbitError::QuotaHttp(format!(
+                                    "Failed to parse Google AvailableModels JSON: {e}"
+                                ))
+                            })?;
+                        QuotaSummary {
+                            buckets: models_resp.into_quota_buckets(now),
+                            groups: Vec::new(),
+                            description: None,
+                            fetched_at: Some(now),
+                        }
+                    } else {
+                        let mut s: QuotaSummary = response.into_json().map_err(|e| {
+                            OrbitError::QuotaHttp(format!("Failed to parse Google Quota JSON: {e}"))
+                        })?;
+                        s.fetched_at = Some(now);
+                        s
+                    };
+
+                    // Non-fatal supplementary enrichment:
+                    if endpoint.contains("fetchAvailableModels") {
+                        let summary_endpoint =
+                            endpoint.replace("fetchAvailableModels", "retrieveUserQuotaSummary");
+                        if let Some(sub_summary) = self.fetch_quota_summary_supplementary(
+                            &summary_endpoint,
+                            access_token,
+                            try_proxy,
+                            deadline,
+                        ) {
+                            summary.groups = sub_summary.groups;
+                            for b in sub_summary.buckets {
+                                if !summary
+                                    .buckets
+                                    .iter()
+                                    .any(|existing| existing.effective_name() == b.effective_name())
+                                {
+                                    summary.buckets.push(b);
+                                }
+                            }
+                        }
+                    } else if !summary_has_gemini(&summary)
                         && endpoint.contains("retrieveUserQuotaSummary")
                     {
                         let raw_endpoint =
                             endpoint.replace("retrieveUserQuotaSummary", "retrieveUserQuota");
                         let sub_remaining = deadline.saturating_duration_since(Instant::now());
                         if sub_remaining.as_millis() > 300 {
-                            let sub_req = agent
+                            let sub_agent = ureq::builder()
+                                .try_proxy_from_env(try_proxy)
+                                .timeout_connect(Duration::from_millis(1000).min(sub_remaining))
+                                .timeout_read(Duration::from_millis(2000).min(sub_remaining))
+                                .build();
+                            let sub_req = sub_agent
                                 .post(&raw_endpoint)
                                 .set("Authorization", &format!("Bearer {access_token}"))
                                 .set("Content-Type", "application/json")
@@ -193,17 +346,17 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
-    fn test_default_endpoints_order_prioritizes_daily_cloudcode() {
+    fn test_default_endpoints_order_prioritizes_fetch_available_models() {
         let adapter = CloudCodeQuotaAdapter::new();
         assert_eq!(
             adapter.endpoints[0],
-            "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-            "daily-cloudcode-pa MUST be the primary endpoint to reflect real Gemini quota consumption"
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+            "daily-cloudcode-pa fetchAvailableModels MUST be the primary endpoint to reflect real Gemini quota consumption"
         );
         assert_eq!(
             adapter.endpoints[1],
-            "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-            "cloudcode-pa MUST be the second endpoint for production fallback"
+            "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+            "cloudcode-pa fetchAvailableModels MUST be the second endpoint for production fallback"
         );
     }
 
@@ -421,5 +574,150 @@ mod tests {
             Some("Claude and GPT models")
         );
         assert_eq!(res.buckets.len(), 0);
+    }
+
+    #[test]
+    fn test_fetch_available_models_success_and_conversion() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                let (body, status) = if req_str.contains("fetchAvailableModels") {
+                    (
+                        r#"{"models":{"gemini-2.5-flash":{"quotaInfo":{"remainingFraction":1.0,"resetTime":"2026-10-29T18:59:59Z"}},"claude-3-7-sonnet":{"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-11-05T00:00:00Z"}}}}"#,
+                        "200 OK",
+                    )
+                } else {
+                    // retrieveUserQuotaSummary returns 403 on consumer account
+                    (
+                        r#"{"error":{"code":403,"message":"SUBSCRIPTION_REQUIRED"}}"#,
+                        "403 Forbidden",
+                    )
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut drain = [0u8; 128];
+                while let Ok(n) = stream.read(&mut drain) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let adapter = CloudCodeQuotaAdapter::without_proxy(vec![format!(
+            "http://127.0.0.1:{port}/v1internal:fetchAvailableModels"
+        )]);
+
+        let res = adapter.fetch_user_quota("test_token").unwrap();
+        assert_eq!(res.buckets.len(), 2);
+        let flash = res
+            .buckets
+            .iter()
+            .find(|b| b.bucket_id == "gemini-2.5-flash")
+            .unwrap();
+        assert_eq!(flash.remaining_fraction, Some(1.0));
+        let claude = res
+            .buckets
+            .iter()
+            .find(|b| b.bucket_id == "claude-3-7-sonnet")
+            .unwrap();
+        assert_eq!(claude.remaining_fraction, Some(0.8));
+    }
+
+    #[test]
+    fn test_retrieve_user_quota_summary_includes_project_and_argon_group() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = Vec::new();
+                let mut temp = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut temp) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&temp[..n]);
+                    let s = String::from_utf8_lossy(&buf);
+                    if let Some(header_end) = s.find("\r\n\r\n") {
+                        let header_len = header_end + 4;
+                        let clen = if let Some(pos) = s.to_lowercase().find("content-length:") {
+                            let after = &s[pos + 15..];
+                            let len_str = after.split("\r\n").next().unwrap_or("0").trim();
+                            len_str.parse::<usize>().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        if buf.len() >= header_len + clen {
+                            break;
+                        }
+                    }
+                }
+                let req_str = String::from_utf8_lossy(&buf);
+
+                let (body, status) = if req_str.contains("fetchAvailableModels") {
+                    (
+                        r#"{"models":{"gemini-3.8-flash-tiered":{"quotaInfo":{"remainingFraction":1.0,"resetTime":"2026-11-05T00:00:00Z"}}}}"#,
+                        "200 OK",
+                    )
+                } else if req_str.contains("retrieveUserQuotaSummary")
+                    && req_str.contains(r#""project":"aicode-consumers""#)
+                {
+                    (
+                        r#"{"groups":[{"displayName":"GEMINI 4 ARGON","description":"For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.","buckets":[{"bucketId":"argon-weekly","displayName":"Gemini 4 Argon Weekly Limit","window":"weekly","remainingFraction":0.2197,"resetTime":"2026-11-05T00:00:00Z"}]}]}"#,
+                        "200 OK",
+                    )
+                } else {
+                    (
+                        r#"{"error":{"code":403,"message":"SUBSCRIPTION_REQUIRED"}}"#,
+                        "403 Forbidden",
+                    )
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut drain = [0u8; 128];
+                while let Ok(n) = stream.read(&mut drain) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let adapter = CloudCodeQuotaAdapter::without_proxy(vec![format!(
+            "http://127.0.0.1:{port}/v1internal:fetchAvailableModels"
+        )]);
+
+        let res = adapter.fetch_user_quota("test_token").unwrap();
+        assert_eq!(res.groups.len(), 1);
+        assert!(res.groups[0].is_argon_group());
+        assert_eq!(
+            res.groups[0].display_name.as_deref(),
+            Some("GEMINI 4 ARGON")
+        );
+        assert_eq!(res.groups[0].buckets.len(), 1);
+        assert!((res.groups[0].buckets[0].remaining_percentage() - 21.97).abs() < 1e-4);
     }
 }

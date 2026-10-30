@@ -8,6 +8,17 @@ use comfy_table::{Attribute, Cell, Color, Row, Table};
 
 const BAR_WIDTH: usize = 20;
 
+fn deduplicate_model_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if seen.insert(name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 /// Render quota information in terminal with adaptive bars, countdown, and warning headers.
 pub fn render_quota_view(data: &QuotaViewData) {
     println!();
@@ -58,58 +69,188 @@ pub fn render_quota_view(data: &QuotaViewData) {
 
     // Render top-level buckets if present and not already covered by groups
     if !summary.buckets.is_empty() {
-        let (gemini_shared, mut other_buckets): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) =
-            summary.buckets.iter().partition(|b| {
-                let name = b.effective_name().to_lowercase();
-                name.contains("gemini") && b.is_weekly()
-            });
+        let now = summary.fetched_at.unwrap_or_else(Utc::now);
 
-        if gemini_shared.len() >= 2 {
-            let first = gemini_shared[0];
-            let same_pool = gemini_shared.iter().all(|b| {
+        let has_argon_group = summary.groups.iter().any(|g| g.is_argon_group());
+        let has_gemini_group = summary.groups.iter().any(|g| g.is_gemini_standard_group());
+        let has_claude_group = summary.groups.iter().any(|g| g.is_claude_group());
+
+        // 1. Separate Argon buckets
+        let (argon_buckets, non_argon_buckets): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) =
+            summary.buckets.iter().partition(|b| b.is_argon());
+
+        // Render Gemini 4 Argon separate pool if not already rendered as a group
+        if !has_argon_group && !argon_buckets.is_empty() {
+            println!("{}", "GEMINI 4 ARGON".bold().underline());
+            println!(
+                "  {}",
+                "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.".dimmed()
+            );
+
+            let model_names =
+                deduplicate_model_names(argon_buckets.iter().map(|b| b.effective_name()));
+            println!(
+                "  {}",
+                format!("Models: {}", model_names.join(", ")).dimmed()
+            );
+
+            let first = argon_buckets[0];
+            let same_pool = argon_buckets.iter().all(|b| {
                 (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
                     && b.reset_time == first.reset_time
             });
 
             if same_pool {
-                println!(
-                    "{}",
-                    "Gemini Models (Shared Weekly Pool)".bold().underline()
-                );
-                let model_names: Vec<&str> =
-                    gemini_shared.iter().map(|b| b.effective_name()).collect();
-                println!(
-                    "  {}",
-                    format!("Models: {}", model_names.join(", ")).dimmed()
-                );
-
-                let mut rep = first.clone();
-                rep.display_name = Some("Weekly Limit Remaining".into());
+                let mut rep = (*first).clone();
+                rep.display_name = Some("Gemini 4 Argon Weekly Limit".into());
                 rep.window = Some("weekly".into());
                 render_bucket_row(&rep, "  ");
-                rendered_any = true;
-                println!();
             } else {
-                other_buckets.extend(gemini_shared);
+                for bucket in &argon_buckets {
+                    render_bucket_row(bucket, "  ");
+                }
             }
-        } else {
-            other_buckets.extend(gemini_shared);
+            rendered_any = true;
+            println!();
         }
 
-        let has_claude_group = summary.groups.iter().any(|g| {
-            let n = g.display_name.as_deref().unwrap_or("").to_lowercase();
-            n.contains("claude") || n.contains("gpt")
-        });
+        // 2. Separate standard Gemini models and other models
+        let (gemini_all, mut other_buckets): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) =
+            non_argon_buckets
+                .into_iter()
+                .partition(|b| b.is_gemini_standard());
+
+        if !has_gemini_group {
+            // Split standard Gemini into 5-hour rolling pool vs weekly pool based on reset time
+            let (gemini_5h, gemini_weekly): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) = gemini_all
+                .into_iter()
+                .partition(|b| b.is_five_hour_relative(now));
+
+            // Render Gemini 5-hour rolling pool
+            if gemini_5h.len() >= 2 {
+                let first = gemini_5h[0];
+                let same_pool = gemini_5h.iter().all(|b| {
+                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                        && b.reset_time == first.reset_time
+                });
+
+                if same_pool {
+                    println!(
+                        "{}",
+                        "Gemini Flash & Pro Models (5-Hour Rolling Pool)"
+                            .bold()
+                            .underline()
+                    );
+                    let model_names =
+                        deduplicate_model_names(gemini_5h.iter().map(|b| b.effective_name()));
+                    println!(
+                        "  {}",
+                        format!("Models: {}", model_names.join(", ")).dimmed()
+                    );
+
+                    let mut rep = (*first).clone();
+                    rep.display_name = Some("Five Hour Limit Remaining".into());
+                    rep.window = Some("5h".into());
+                    render_bucket_row(&rep, "  ");
+                    rendered_any = true;
+                    println!();
+                } else {
+                    other_buckets.extend(gemini_5h);
+                }
+            } else {
+                other_buckets.extend(gemini_5h);
+            }
+
+            // Render Gemini Weekly pool
+            if gemini_weekly.len() >= 2 {
+                let first = gemini_weekly[0];
+                let same_pool = gemini_weekly.iter().all(|b| {
+                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                        && b.reset_time == first.reset_time
+                });
+
+                if same_pool {
+                    println!(
+                        "{}",
+                        "Gemini Tiered Models (Shared Weekly Pool)"
+                            .bold()
+                            .underline()
+                    );
+                    let model_names =
+                        deduplicate_model_names(gemini_weekly.iter().map(|b| b.effective_name()));
+                    println!(
+                        "  {}",
+                        format!("Models: {}", model_names.join(", ")).dimmed()
+                    );
+
+                    let mut rep = (*first).clone();
+                    rep.display_name = Some("Weekly Limit Remaining".into());
+                    rep.window = Some("weekly".into());
+                    render_bucket_row(&rep, "  ");
+                    rendered_any = true;
+                    println!();
+                } else {
+                    other_buckets.extend(gemini_weekly);
+                }
+            } else {
+                other_buckets.extend(gemini_weekly);
+            }
+        }
+
+        // If no Claude group exists (e.g. consumer accounts), fold Claude models if present
+        if !has_claude_group {
+            let (claude_models, rem): (Vec<&QuotaBucket>, Vec<&QuotaBucket>) = other_buckets
+                .into_iter()
+                .partition(|b| b.is_claude_or_gpt());
+            other_buckets = rem;
+
+            if claude_models.len() >= 2 {
+                let first = claude_models[0];
+                let same_pool = claude_models.iter().all(|b| {
+                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                        && b.reset_time == first.reset_time
+                });
+
+                if same_pool {
+                    println!(
+                        "{}",
+                        "Claude and Partner Models (Shared Weekly Pool)"
+                            .bold()
+                            .underline()
+                    );
+                    let model_names =
+                        deduplicate_model_names(claude_models.iter().map(|b| b.effective_name()));
+                    println!(
+                        "  {}",
+                        format!("Models: {}", model_names.join(", ")).dimmed()
+                    );
+
+                    let mut rep = (*first).clone();
+                    rep.display_name = Some("Weekly Limit Remaining".into());
+                    rep.window = Some("weekly".into());
+                    render_bucket_row(&rep, "  ");
+                    rendered_any = true;
+                    println!();
+                } else {
+                    other_buckets.extend(claude_models);
+                }
+            } else {
+                other_buckets.extend(claude_models);
+            }
+        }
 
         // Only show internal/additional buckets if they have consumed quota (<99.9%)
         // or explicitly have display names / reset times, avoiding internal token clutter
         let significant_others: Vec<&&QuotaBucket> = other_buckets
             .iter()
             .filter(|b| {
-                let id = b.bucket_id.to_lowercase();
-                if has_claude_group && (id.contains("claude") || id.contains("gpt")) {
+                if has_claude_group && b.is_claude_or_gpt() {
                     return false;
                 }
+                if has_argon_group && b.is_argon() {
+                    return false;
+                }
+                let id = b.bucket_id.to_lowercase();
                 let is_internal_stub = (id.starts_with("chat_") || id.starts_with("tab_"))
                     && b.remaining_percentage() >= 99.9
                     && b.reset_time.is_none();
@@ -172,20 +313,29 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     );
     println!();
 
+    let has_any_argon = rows.iter().any(|r| r.argon_wk_pct.is_some());
+
+    let mut header_cells = vec![
+        Cell::new("Orbit").fg(Color::Cyan),
+        Cell::new("Account").fg(Color::Cyan),
+        Cell::new("Gemini 5h").fg(Color::Cyan),
+        Cell::new("Gemini Wk").fg(Color::Cyan),
+    ];
+    if has_any_argon {
+        header_cells.push(Cell::new("Argon Wk").fg(Color::Cyan));
+    }
+    header_cells.extend(vec![
+        Cell::new("Claude 5h").fg(Color::Cyan),
+        Cell::new("Claude Wk").fg(Color::Cyan),
+        Cell::new("Health").fg(Color::Cyan),
+        Cell::new("Next Reset").fg(Color::Cyan),
+    ]);
+
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            Cell::new("Orbit").fg(Color::Cyan),
-            Cell::new("Account").fg(Color::Cyan),
-            Cell::new("Gemini 5h").fg(Color::Cyan),
-            Cell::new("Gemini Wk").fg(Color::Cyan),
-            Cell::new("Claude 5h").fg(Color::Cyan),
-            Cell::new("Claude Wk").fg(Color::Cyan),
-            Cell::new("Health").fg(Color::Cyan),
-            Cell::new("Next Reset").fg(Color::Cyan),
-        ]);
+        .set_header(header_cells);
 
     for row in rows {
         let orbit_name = if row.is_active {
@@ -224,16 +374,13 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
         };
         let reset_cell = Cell::new(reset_str);
 
-        table.add_row(Row::from(vec![
-            orbit_cell,
-            email_cell,
-            g5_cell,
-            gw_cell,
-            c5_cell,
-            cw_cell,
-            status_cell,
-            reset_cell,
-        ]));
+        let mut row_cells = vec![orbit_cell, email_cell, g5_cell, gw_cell];
+        if has_any_argon {
+            row_cells.push(format_metric_cell(row.argon_wk_pct));
+        }
+        row_cells.extend(vec![c5_cell, cw_cell, status_cell, reset_cell]);
+
+        table.add_row(Row::from(row_cells));
     }
 
     println!("{table}");
@@ -439,5 +586,44 @@ mod tests {
 
         let none = format_metric_cell(None);
         assert_eq!(none.content(), "     -");
+    }
+
+    #[test]
+    fn test_deduplicate_model_names() {
+        let input = vec![
+            "Gemini 2.5 Flash",
+            "Gemini 3.5 Flash Lite",
+            "Gemini 3.5 Flash Lite",
+            "Gemini 3.5 Flash Lite",
+            "Gemini 3 Flash",
+        ];
+        let deduped = deduplicate_model_names(input);
+        assert_eq!(
+            deduped,
+            vec![
+                "Gemini 2.5 Flash",
+                "Gemini 3.5 Flash Lite",
+                "Gemini 3 Flash",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_multi_quota_table_argon_column_presence() {
+        let rows_with_argon = vec![MultiQuotaRowData {
+            orbit_name: "pro".into(),
+            account_email: Some("pro@example.com".into()),
+            is_active: true,
+            is_stale: false,
+            gemini_5h_pct: Some(MetricState::Available(100.0)),
+            gemini_wk_pct: Some(MetricState::Available(100.0)),
+            argon_wk_pct: Some(MetricState::Available(21.97)),
+            claude_5h_pct: None,
+            claude_wk_pct: None,
+            status: RowStatus::Ready,
+            next_reset: None,
+        }];
+        // Should execute cleanly without panic
+        render_multi_quota_table(&rows_with_argon);
     }
 }

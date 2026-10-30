@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-30
+
+### Added
+- **GEMINI 4 ARGON Separate Quota Pool Modeling & Dynamic Dashboard**:
+  - Modeled `GEMINI 4 ARGON` as an isolated domain entity (`QuotaBucket::is_argon()`, `QuotaGroup::is_argon_group()`), preserving its separate weekly limit (e.g. 21.97%) without corrupting standard Gemini 5h / weekly pools.
+  - Enhanced single-orbit terminal view (`agyo quota`) with official Antigravity styling for `GEMINI 4 ARGON` (complete with official plan description and dedicated progress bar).
+  - Dynamically added `Argon Wk` column to the multi-account quota dashboard (`agyo quota -a`) whenever an account possesses an Argon quota pool, maintaining a compact 8-column layout when Argon is absent.
+  - Added model names deduplication preserving order in terminal model lists, eliminating repeated model names (e.g., `Gemini 3.5 Flash Lite`).
+  - Added clean fallback display names for `gemini-3.8-flash-tiered` (`Gemini 3.8 Flash (Tiered)`) and `gemini-4-argon-*` (`Gemini 4 Argon (Low/Medium/High)`).
+
+### Fixed
+- **Proto3 Zero-Value Omission in Model Quota Deserialization**:
+  - Fixed false 100.0% display for exhausted model pools caused by Proto3 JSON serializer omitting `remainingFraction: 0.0` while retaining `resetTime`. `QuotaBucket::remaining_percentage()` now distinguishes between metered exhausted models (0.0%) and unmetered internal models (100.0%).
+- **Project Payload in `:retrieveUserQuotaSummary`**:
+  - Aligned `:retrieveUserQuotaSummary` requests with official `agy.exe` Go client by passing `{"project": "<project>"}` resolved via `:loadCodeAssist` (`cloudaicompanionProject`, fallback `"aicode-consumers"`), eliminating HTTP 403 `SUBSCRIPTION_REQUIRED` and unlocking official server-side quota groups (`Claude and GPT models`, `GEMINI 4 ARGON`) across all accounts.
+- **Cross-Account Credential Attribution Guard**:
+  - Fixed attribution mismatch where OS Keyring tokens without `id_token` on Windows were erroneously paired with stale `~/.gemini/google_accounts.json` emails. Keyring `refresh_token` is now verified against disk and matched against saved vault orbits to prevent token cross-contamination during CLI switching.
+- **Multi-Account Quota Accuracy & Antigravity PA Alignment**:
+  - Re-aligned primary quota endpoint with official `agy` CLI Go architecture (`fetchAvailableModels`), completely eliminating false-positive `HTTP 403 SUBSCRIPTION_REQUIRED` errors on individual / consumer accounts.
+  - Decoupled `token_type: "WTUS"` (Weighted Token Usage System) from weekly quota classification; introduced adaptive $\Delta t = T_{\text{reset}} - T_{\text{now}}$ resolution where $\Delta t \le 12\text{h}$ maps to 5-hour rolling pool (`gemini_5h_pct`) and $\Delta t > 12\text{h}$ maps to weekly tiered limits (`gemini_wk_pct`).
+  - Fixed empty `-` cell in `Gemini 5h` column of aggregated multi-account dashboard (`agyo quota -a`).
+  - Enhanced single-orbit terminal view (`agyo quota`) with distinct pool foldings for `Gemini Flash & Pro Models (5-Hour Rolling Pool)` and `Gemini Tiered Models (Shared Weekly Pool)`, eliminating contradictory `Weekly Limit Remaining [weekly] (resets in 5h)` labels.
+  - Added non-fatal group enrichment from `retrieveUserQuotaSummary` when available to preserve partner model breakdowns without failing on consumer tiers.
+
 ## [0.3.3] - 2026-10-21
 
 ### Fixed

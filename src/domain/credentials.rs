@@ -318,12 +318,58 @@ fn parse_expiry_to_ms(exp_str: &str) -> Option<i64> {
     }
 }
 
+/// Extract refresh_token from a raw keyring secret string (KeyringPayload or flat OAuthCreds).
+pub fn extract_refresh_token_from_secret(secret: &str) -> Option<String> {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(payload) = serde_json::from_str::<KeyringPayload>(trimmed)
+        && let Some(token) = payload.token
+        && let Some(rt) = token.refresh_token
+    {
+        let rt_trim = rt.trim();
+        if !rt_trim.is_empty() {
+            return Some(rt_trim.to_string());
+        }
+    }
+    if let Ok(oauth) = serde_json::from_str::<OAuthCreds>(trimmed)
+        && let Some(rt) = oauth.refresh_token
+    {
+        let rt_trim = rt.trim();
+        if !rt_trim.is_empty() {
+            return Some(rt_trim.to_string());
+        }
+    }
+    None
+}
+
 /// Resolve credentials across Keyring and disk targets with Keyring-first priority.
+/// Guards against cross-account attribution when OS Keyring has been switched by `agy`
+/// (which lacks `id_token` on Windows) while `~/.gemini/oauth_creds.json` and
+/// `~/.gemini/google_accounts.json` still hold a different account's stale state.
 pub fn resolve_credentials(
     keyring_secret: Option<&str>,
     oauth_bytes: Option<&[u8]>,
     accounts_bytes: Option<&[u8]>,
 ) -> Option<ResolvedIdentity> {
+    let disk_oauth = oauth_bytes.and_then(|b| serde_json::from_slice::<OAuthCreds>(b).ok());
+
+    // Helper: check whether disk files belong to a different account than the Keyring token.
+    let disk_matches_keyring_rt = |keyring_rt: Option<&str>| -> bool {
+        match (
+            keyring_rt.map(str::trim).filter(|s| !s.is_empty()),
+            disk_oauth
+                .as_ref()
+                .and_then(|d| d.refresh_token.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            (Some(k_rt), Some(d_rt)) => k_rt == d_rt,
+            _ => true,
+        }
+    };
+
     // 1. Try OS Keyring (Priority 1)
     if let Some(secret) = keyring_secret {
         let trimmed = secret.trim();
@@ -334,18 +380,32 @@ pub fn resolve_credentials(
             {
                 let at = token.access_token.trim().to_string();
                 if !at.is_empty() {
-                    let email = payload
-                        .id_token
+                    let can_use_disk_identity =
+                        disk_matches_keyring_rt(token.refresh_token.as_deref());
+                    let effective_id_token = payload.id_token.or_else(|| {
+                        if can_use_disk_identity {
+                            disk_oauth.as_ref().and_then(|d| d.id_token.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let email = effective_id_token
                         .as_deref()
                         .and_then(extract_email_from_jwt)
-                        .or_else(|| accounts_bytes.and_then(extract_active_email));
-                    let client_id = payload.id_token.as_deref().and_then(extract_aud_from_jwt);
+                        .or_else(|| {
+                            if can_use_disk_identity {
+                                accounts_bytes.and_then(extract_active_email)
+                            } else {
+                                None
+                            }
+                        });
+                    let client_id = effective_id_token.as_deref().and_then(extract_aud_from_jwt);
                     let expires_at_ms = token.expiry.as_deref().and_then(parse_expiry_to_ms);
                     return Some(ResolvedIdentity {
                         access_token: at,
                         email,
                         refresh_token: token.refresh_token,
-                        id_token: payload.id_token,
+                        id_token: effective_id_token,
                         client_id,
                         expires_at_ms,
                     });
@@ -355,17 +415,31 @@ pub fn resolve_credentials(
             if let Ok(oauth) = serde_json::from_str::<OAuthCreds>(trimmed) {
                 let at = oauth.access_token.trim().to_string();
                 if !at.is_empty() {
-                    let email = oauth
-                        .id_token
+                    let can_use_disk_identity =
+                        disk_matches_keyring_rt(oauth.refresh_token.as_deref());
+                    let effective_id_token = oauth.id_token.or_else(|| {
+                        if can_use_disk_identity {
+                            disk_oauth.as_ref().and_then(|d| d.id_token.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let email = effective_id_token
                         .as_deref()
                         .and_then(extract_email_from_jwt)
-                        .or_else(|| accounts_bytes.and_then(extract_active_email));
-                    let client_id = oauth.id_token.as_deref().and_then(extract_aud_from_jwt);
+                        .or_else(|| {
+                            if can_use_disk_identity {
+                                accounts_bytes.and_then(extract_active_email)
+                            } else {
+                                None
+                            }
+                        });
+                    let client_id = effective_id_token.as_deref().and_then(extract_aud_from_jwt);
                     return Some(ResolvedIdentity {
                         access_token: at,
                         email,
                         refresh_token: oauth.refresh_token,
-                        id_token: oauth.id_token,
+                        id_token: effective_id_token,
                         client_id,
                         expires_at_ms: oauth.expiry_date,
                     });
@@ -375,9 +449,7 @@ pub fn resolve_credentials(
     }
 
     // 2. Try disk oauth_creds.json (Priority 2)
-    if let Some(bytes) = oauth_bytes
-        && let Ok(oauth) = serde_json::from_slice::<OAuthCreds>(bytes)
-    {
+    if let Some(oauth) = disk_oauth {
         let at = oauth.access_token.trim().to_string();
         if !at.is_empty() {
             let email = oauth
@@ -707,5 +779,88 @@ mod tests {
         // 3. Valid keyring secret passes regardless
         let valid_keyring = r#"{"auth_method":"consumer","token":{"access_token":"ya29.valid_keyring_token_12345678901234567890"}}"#;
         assert!(validate_keyring_secret_for_sync(valid_keyring, None).is_ok());
+    }
+
+    #[test]
+    fn test_resolve_credentials_prevents_cross_account_disk_attribution() {
+        // Keyring has NO id_token and belongs to account MC ("rt_mc")
+        let keyring_mc = r#"{
+            "token": {
+                "access_token": "ya29.mc_access_token_12345678901234567890",
+                "refresh_token": "1//0g_rt_mc_token_1234567890",
+                "token_type": "Bearer"
+            }
+        }"#;
+        // Disk oauth_creds.json and google_accounts.json belong to a different account GIO ("rt_gio")
+        let disk_oauth_gio = br#"{
+            "access_token": "ya29.gio_access_token_12345678901234567890",
+            "refresh_token": "1//0g_rt_gio_token_1234567890",
+            "id_token": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ICJnaW9AZ21haWwuY29tIn0.sig"
+        }"#;
+        let disk_accounts_gio = br#"{"active": "gio@gmail.com", "old": []}"#;
+
+        let resolved_mismatch = resolve_credentials(
+            Some(keyring_mc),
+            Some(disk_oauth_gio),
+            Some(disk_accounts_gio),
+        )
+        .expect("Should resolve keyring token");
+        assert_eq!(
+            resolved_mismatch.access_token,
+            "ya29.mc_access_token_12345678901234567890"
+        );
+        assert_eq!(
+            resolved_mismatch.refresh_token.as_deref(),
+            Some("1//0g_rt_mc_token_1234567890")
+        );
+        // Must NOT attribute gio@gmail.com to mc's keyring token!
+        assert_eq!(resolved_mismatch.email, None);
+
+        // When disk refresh_token matches keyring refresh_token, disk identity CAN be used
+        let disk_oauth_mc = br#"{
+            "access_token": "ya29.mc_old_disk_token_12345678901234567890",
+            "refresh_token": "1//0g_rt_mc_token_1234567890",
+            "id_token": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ICJtY0BnbWFpbC5jb20ifQ.sig"
+        }"#;
+        let disk_accounts_mc = br#"{"active": "mc@gmail.com", "old": []}"#;
+        let resolved_match = resolve_credentials(
+            Some(keyring_mc),
+            Some(disk_oauth_mc),
+            Some(disk_accounts_mc),
+        )
+        .expect("Should resolve matching keyring token");
+        assert_eq!(resolved_match.email.as_deref(), Some("mc@gmail.com"));
+    }
+
+    #[test]
+    fn test_extract_refresh_token_from_secret_scenarios() {
+        // Modern KeyringPayload
+        let keyring_json = r#"{
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "ya29.test",
+                "refresh_token": "1//0g_keyring_rt"
+            }
+        }"#;
+        assert_eq!(
+            extract_refresh_token_from_secret(keyring_json),
+            Some("1//0g_keyring_rt".to_string())
+        );
+
+        // Flat OAuthCreds
+        let flat_oauth = r#"{
+            "access_token": "ya29.test",
+            "refresh_token": "1//0g_flat_rt"
+        }"#;
+        assert_eq!(
+            extract_refresh_token_from_secret(flat_oauth),
+            Some("1//0g_flat_rt".to_string())
+        );
+
+        // Missing or empty refresh_token
+        let empty_rt = r#"{"auth_method": "consumer", "token": {"access_token": "ya29.test"}}"#;
+        assert_eq!(extract_refresh_token_from_secret(empty_rt), None);
+        assert_eq!(extract_refresh_token_from_secret(""), None);
+        assert_eq!(extract_refresh_token_from_secret("invalid json"), None);
     }
 }
