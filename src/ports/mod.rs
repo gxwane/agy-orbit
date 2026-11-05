@@ -14,7 +14,7 @@ pub use keyring::KeyringPort;
 pub use lease::{LeaseGuard, LeasePort};
 pub use oauth::{RefreshedToken, TokenRefreshPort};
 pub use probe::{EndpointProbeResult, NetworkProbePort, ProxyConfig};
-pub use quota::{QuotaCachePort, QuotaPort};
+pub use quota::{NativeUsagePort, QuotaCachePort, QuotaPort};
 pub use storage::StoragePort;
 pub use target::TargetPort;
 pub use upgrade::{BinaryReplacerPort, ReleaseProviderPort, UpdateCachePort};

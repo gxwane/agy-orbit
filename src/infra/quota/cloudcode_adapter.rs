@@ -56,6 +56,7 @@ impl CloudCodeQuotaAdapter {
 }
 
 const DEFAULT_CAIC_PROJECT: &str = "aicode-consumers";
+pub const DEFAULT_CLOUDCODE_USER_AGENT: &str = "antigravity/acp/1.4.12";
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +66,14 @@ struct LoadCodeAssistResponse {
 }
 
 impl CloudCodeQuotaAdapter {
+    fn resolve_user_agent() -> String {
+        std::env::var("AGYO_QUOTA_USER_AGENT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLOUDCODE_USER_AGENT.to_string())
+    }
+
     fn request_body_for_endpoint(endpoint: &str, project: &str) -> String {
         if endpoint.contains("retrieveUserQuotaSummary") {
             serde_json::json!({ "project": project }).to_string()
@@ -96,13 +105,12 @@ impl CloudCodeQuotaAdapter {
             .timeout_connect(Duration::from_millis(1000).min(remaining))
             .timeout_read(Duration::from_millis(1500).min(remaining))
             .build();
-        let body =
-            r#"{"metadata":{"ideType":"ANTIGRAVITY","platform":"WINDOWS","pluginType":"GEMINI"}}"#;
+        let body = r#"{"metadata":{"ideType":"ANTIGRAVITY"}}"#;
         let resp = agent
             .post(&lca_endpoint)
             .set("Authorization", &format!("Bearer {access_token}"))
             .set("Content-Type", "application/json")
-            .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+            .set("User-Agent", &Self::resolve_user_agent())
             .send_string(body)
             .ok()?;
         let parsed: LoadCodeAssistResponse = resp.into_json().ok()?;
@@ -128,20 +136,25 @@ impl CloudCodeQuotaAdapter {
             .timeout_connect(Duration::from_millis(1000).min(sub_remaining))
             .timeout_read(Duration::from_millis(2000).min(sub_remaining))
             .build();
+        let user_agent = Self::resolve_user_agent();
 
         let primary_body = Self::request_body_for_endpoint(summary_endpoint, DEFAULT_CAIC_PROJECT);
+        let mut fallback_summary: Option<QuotaSummary> = None;
         if let Ok(sub_resp) = sub_agent
             .post(summary_endpoint)
             .set("Authorization", &format!("Bearer {access_token}"))
             .set("Content-Type", "application/json")
-            .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+            .set("User-Agent", &user_agent)
             .send_string(&primary_body)
             && let Ok(sub_summary) = sub_resp.into_json::<QuotaSummary>()
         {
-            return Some(sub_summary);
+            if !sub_summary.groups.is_empty() || !sub_summary.buckets.is_empty() {
+                return Some(sub_summary);
+            }
+            fallback_summary = Some(sub_summary);
         }
 
-        // Fallback: resolve custom cloudaicompanionProject via loadCodeAssist if default project was rejected
+        // Fallback: resolve custom cloudaicompanionProject via loadCodeAssist if default project was rejected or empty
         let rem_after = deadline.saturating_duration_since(Instant::now());
         if let Some(custom_proj) = self.resolve_project_via_load_code_assist(
             summary_endpoint,
@@ -155,14 +168,14 @@ impl CloudCodeQuotaAdapter {
                 .post(summary_endpoint)
                 .set("Authorization", &format!("Bearer {access_token}"))
                 .set("Content-Type", "application/json")
-                .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)")
+                .set("User-Agent", &user_agent)
                 .send_string(&retry_body)
                 && let Ok(sub_summary) = retry_resp.into_json::<QuotaSummary>()
             {
                 return Some(sub_summary);
             }
         }
-        None
+        fallback_summary
     }
 }
 
@@ -205,11 +218,12 @@ impl QuotaPort for CloudCodeQuotaAdapter {
                 .timeout_read(read_timeout)
                 .build();
 
+            let user_agent = Self::resolve_user_agent();
             let request = agent
                 .post(endpoint)
                 .set("Authorization", &format!("Bearer {access_token}"))
                 .set("Content-Type", "application/json")
-                .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)");
+                .set("User-Agent", &user_agent);
 
             let body = Self::request_body_for_endpoint(endpoint, DEFAULT_CAIC_PROJECT);
 
@@ -274,7 +288,7 @@ impl QuotaPort for CloudCodeQuotaAdapter {
                                 .post(&raw_endpoint)
                                 .set("Authorization", &format!("Bearer {access_token}"))
                                 .set("Content-Type", "application/json")
-                                .set("User-Agent", "Antigravity/1.0.0 (Google-Cloud-Code)");
+                                .set("User-Agent", &user_agent);
                             if let Ok(sub_resp) = sub_req.send_string("{}")
                                 && let Ok(sub_summary) = sub_resp.into_json::<QuotaSummary>()
                             {
@@ -719,5 +733,107 @@ mod tests {
         );
         assert_eq!(res.groups[0].buckets.len(), 1);
         assert!((res.groups[0].buckets[0].remaining_percentage() - 21.97).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_cloudcode_adapter_sends_acp_user_agent_and_valid_lca_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = Vec::new();
+                let mut temp = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut temp) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&temp[..n]);
+                    let s = String::from_utf8_lossy(&buf);
+                    if let Some(header_end) = s.find("\r\n\r\n") {
+                        let header_len = header_end + 4;
+                        let clen = if let Some(pos) = s.to_lowercase().find("content-length:") {
+                            let after = &s[pos + 15..];
+                            let len_str = after.split("\r\n").next().unwrap_or("0").trim();
+                            len_str.parse::<usize>().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        if buf.len() >= header_len + clen {
+                            break;
+                        }
+                    }
+                }
+                let req_str = String::from_utf8_lossy(&buf);
+                let has_acp_ua = req_str
+                    .to_ascii_lowercase()
+                    .contains("user-agent: antigravity/acp/1.4.12");
+
+                let (body, status) = if !has_acp_ua {
+                    (
+                        r#"{"error":{"code":400,"message":"Legacy User-Agent rejected"}}"#,
+                        "400 Bad Request",
+                    )
+                } else if req_str.contains("fetchAvailableModels") {
+                    (
+                        r#"{"models":{"gemini-2.5-pro":{"quotaInfo":{"remainingFraction":0.5,"resetTime":"2026-11-05T00:00:00Z"}}}}"#,
+                        "200 OK",
+                    )
+                } else if req_str.contains("retrieveUserQuotaSummary")
+                    && req_str.contains(r#""project":"aicode-consumers""#)
+                {
+                    // Return empty groups on default project to trigger loadCodeAssist fallback
+                    (r#"{"groups":[]}"#, "200 OK")
+                } else if req_str.contains("loadCodeAssist") {
+                    if req_str.contains(r#""platform":"WINDOWS""#) {
+                        (
+                            r#"{"error":{"code":400,"message":"Invalid value at metadata.platform"}}"#,
+                            "400 Bad Request",
+                        )
+                    } else {
+                        (
+                            r#"{"cloudaicompanionProject":"custom-argon-proj"}"#,
+                            "200 OK",
+                        )
+                    }
+                } else if req_str.contains("retrieveUserQuotaSummary")
+                    && req_str.contains(r#""project":"custom-argon-proj""#)
+                {
+                    (
+                        r#"{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-wk","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":0.5}]},{"displayName":"Gemini 4 Argon","buckets":[{"bucketId":"argon-wk","displayName":"Gemini 4 Argon Weekly Limit","window":"weekly","remainingFraction":0.25}]}]}"#,
+                        "200 OK",
+                    )
+                } else {
+                    (r#"{"error":{"code":404}}"#, "404 Not Found")
+                };
+
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let mut drain = [0u8; 128];
+                while let Ok(n) = stream.read(&mut drain) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let adapter = CloudCodeQuotaAdapter::without_proxy(vec![format!(
+            "http://127.0.0.1:{port}/v1internal:fetchAvailableModels"
+        )]);
+
+        let res = adapter
+            .fetch_user_quota("test_token")
+            .expect("Adapter MUST send ACP User-Agent and valid loadCodeAssist payload");
+        assert_eq!(res.groups.len(), 2);
+        assert!(res.groups.iter().any(|g| g.is_gemini_standard_group()));
+        assert!(res.groups.iter().any(|g| g.is_argon_group()));
     }
 }

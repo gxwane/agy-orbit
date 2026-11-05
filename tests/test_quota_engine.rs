@@ -1,6 +1,6 @@
 mod common;
 
-use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService, StaleReason};
+use agy_orbit::app::{QuotaQueryOptions, QuotaService, RowStatus, SnapshotService};
 use agy_orbit::domain::quota::{
     MetricState, QuotaBucket, QuotaCacheEntry, QuotaGroup, QuotaSummary,
 };
@@ -8,10 +8,10 @@ use agy_orbit::error::{OrbitError, Result};
 use agy_orbit::infra::crypto::create_default_vault;
 use agy_orbit::infra::quota::FileQuotaCacheAdapter;
 use agy_orbit::infra::storage::{FileStorage, TargetAdapter};
-use agy_orbit::ports::KeyringPort;
-use agy_orbit::ports::mock::{MockKeyring, MockLeasePort, MockTokenRefresh};
+use agy_orbit::ports::mock::{MockKeyring, MockLeasePort, MockNativeUsage, MockTokenRefresh};
 use agy_orbit::ports::oauth::RefreshedToken;
 use agy_orbit::ports::quota::{QuotaCachePort, QuotaPort};
+use agy_orbit::ports::{KeyringPort, StoragePort};
 use chrono::{Duration, Utc};
 use common::sandbox::TestSandbox;
 use std::sync::Arc;
@@ -596,25 +596,30 @@ fn test_query_quota_401_falls_back_to_cache() {
         .with_keyring(&keyring)
         .with_vault(vault.as_ref());
 
-    // Single query for 'mc'
-    let view_data = service
-        .query_quota(QuotaQueryOptions {
-            orbit: Some("mc".into()),
-            refresh: false,
-        })
-        .unwrap();
-    assert!(view_data.is_stale);
-    assert_eq!(view_data.stale_reason, Some(StaleReason::TokenExpired));
-    assert!(view_data.warning.is_some());
-    assert_eq!(view_data.account_email.as_deref(), Some("mc@example.com"));
+    // Single query for 'mc' MUST evict stale cache and return Err on 401
+    let res = service.query_quota(QuotaQueryOptions {
+        orbit: Some("mc".into()),
+        refresh: false,
+    });
+    assert!(
+        res.is_err(),
+        "401 MUST NOT fall back to stale cached data; it must fail closed"
+    );
+    assert!(
+        cache_port.load_quota_cache("mc").unwrap().is_none(),
+        "401 MUST physically evict the stale quota cache file for 'mc'"
+    );
 
-    // Multi query for all orbits
+    // Multi query for all orbits: 'mc' row MUST render None metrics (dashes) and TokenStale status
     let rows = service.query_all_quotas(false).unwrap();
     let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
     assert!(!mc_row.is_active);
-    assert!(mc_row.is_stale);
-    assert!(mc_row.gemini_5h_pct.is_some());
-    assert!(mc_row.next_reset.is_some());
+    assert!(!mc_row.is_stale);
+    assert_eq!(mc_row.gemini_5h_pct, None);
+    assert_eq!(mc_row.gemini_wk_pct, None);
+    assert_eq!(mc_row.claude_5h_pct, None);
+    assert_eq!(mc_row.claude_wk_pct, None);
+    assert_eq!(mc_row.next_reset, None);
     assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
 }
 
@@ -800,19 +805,23 @@ fn test_quota_service_silent_auto_refresh_invalid_grant_falls_back() {
         .with_vault(vault.as_ref())
         .with_token_refresh(&mock_refresh);
 
-    let view_data = service
-        .query_quota(QuotaQueryOptions {
-            orbit: Some("mc".into()),
-            refresh: false,
-        })
-        .unwrap();
-
-    assert!(view_data.is_stale);
-    assert_eq!(view_data.stale_reason, Some(StaleReason::TokenExpired));
+    let res = service.query_quota(QuotaQueryOptions {
+        orbit: Some("mc".into()),
+        refresh: false,
+    });
+    assert!(
+        res.is_err(),
+        "Revoked refresh token (invalid_grant) MUST NOT fall back to stale cache"
+    );
+    assert!(
+        cache_port.load_quota_cache("mc").unwrap().is_none(),
+        "invalid_grant MUST evict stale cache file"
+    );
 
     let rows = service.query_all_quotas(false).unwrap();
     let mc_row = rows.iter().find(|r| r.orbit_name == "mc").unwrap();
-    assert!(mc_row.is_stale);
+    assert!(!mc_row.is_stale);
+    assert_eq!(mc_row.gemini_5h_pct, None);
     assert!(matches!(mc_row.status, RowStatus::TokenStale(_)));
 }
 
@@ -940,5 +949,285 @@ fn test_quota_forbidden_smart_gemini_cli_diagnostics() {
         matches!(row.status, RowStatus::Error(ref m) if m.contains("Forbidden (403)")),
         "Multi-quota row status MUST indicate Forbidden (403) instead of generic Network error: {:?}",
         row.status
+    );
+}
+
+#[test]
+fn test_quota_service_uses_native_for_active_orbit_and_captures_argon() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // 1. Setup active orbit "mc" in keyring and storage
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6Im1jQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"mc_tok","token_type":"Bearer","refresh_token":"rf"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("mc", None, false).unwrap();
+
+    // Set active orbit in index
+    let mut index = storage.load_index().unwrap_or_default();
+    index.active_orbit = Some("mc".into());
+    storage.save_index(&index).unwrap();
+
+    // Native companion output returns 5 items including Argon!
+    let native_summary = QuotaSummary {
+        groups: vec![
+            QuotaGroup {
+                display_name: Some("Gemini".into()),
+                description: None,
+                buckets: vec![
+                    QuotaBucket {
+                        bucket_id: "gemini-5h".into(),
+                        display_name: Some("Gemini 5-Hour".into()),
+                        description: None,
+                        window: Some("5h".into()),
+                        remaining_fraction: Some(1.0),
+                        remaining_amount: None,
+                        disabled: None,
+                        reset_time: None,
+                        token_type: None,
+                        extra: Default::default(),
+                    },
+                    QuotaBucket {
+                        bucket_id: "gemini-wk".into(),
+                        display_name: Some("Gemini Weekly".into()),
+                        description: None,
+                        window: Some("weekly".into()),
+                        remaining_fraction: Some(0.98),
+                        remaining_amount: None,
+                        disabled: None,
+                        reset_time: None,
+                        token_type: None,
+                        extra: Default::default(),
+                    },
+                ],
+            },
+            QuotaGroup {
+                display_name: Some("Gemini 4 Argon".into()),
+                description: None,
+                buckets: vec![QuotaBucket {
+                    bucket_id: "gemini-argon-wk".into(),
+                    display_name: Some("Gemini 4 Argon Weekly".into()),
+                    description: None,
+                    window: Some("weekly".into()),
+                    remaining_fraction: Some(0.0),
+                    remaining_amount: None,
+                    disabled: None,
+                    reset_time: None,
+                    token_type: None,
+                    extra: Default::default(),
+                }],
+            },
+            QuotaGroup {
+                display_name: Some("Claude".into()),
+                description: None,
+                buckets: vec![
+                    QuotaBucket {
+                        bucket_id: "claude-5h".into(),
+                        display_name: Some("Claude 5-Hour".into()),
+                        description: None,
+                        window: Some("5h".into()),
+                        remaining_fraction: Some(1.0),
+                        remaining_amount: None,
+                        disabled: None,
+                        reset_time: None,
+                        token_type: None,
+                        extra: Default::default(),
+                    },
+                    QuotaBucket {
+                        bucket_id: "claude-wk".into(),
+                        display_name: Some("Claude Weekly".into()),
+                        description: None,
+                        window: Some("weekly".into()),
+                        remaining_fraction: Some(0.95),
+                        remaining_amount: None,
+                        disabled: None,
+                        reset_time: None,
+                        token_type: None,
+                        extra: Default::default(),
+                    },
+                ],
+            },
+        ],
+        buckets: vec![],
+        description: None,
+        fetched_at: Some(Utc::now()),
+    };
+
+    struct FailingHttpQuotaPort;
+    impl QuotaPort for FailingHttpQuotaPort {
+        fn fetch_user_quota(&self, _access_token: &str) -> Result<QuotaSummary> {
+            Err(OrbitError::QuotaHttp("Simulated HTTP failure".into()))
+        }
+    }
+
+    let quota_port = FailingHttpQuotaPort;
+    let mock_native = MockNativeUsage::new().with_summary(native_summary);
+    let cache_port = FileQuotaCacheAdapter;
+
+    let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_native_usage(&mock_native);
+
+    // Query active orbit directly: when HTTP fails, active orbit falls back to native companion
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("mc".into()),
+            refresh: true,
+        })
+        .unwrap();
+
+    // Verify it received the native fallback summary with Argon!
+    let has_argon = view_data.summary.groups.iter().any(|g| g.is_argon_group());
+    assert!(
+        has_argon,
+        "Active orbit quota query MUST fall back to native agy companion when HTTP fails and capture Gemini 4 Argon!"
+    );
+    assert_eq!(view_data.summary.groups.len(), 3);
+}
+
+#[test]
+fn test_quota_service_falls_back_to_http_when_native_fails_or_unavailable() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    let secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"act_tok","token_type":"Bearer","refresh_token":"rf"}}"#;
+    keyring.set_secret(secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_acc", None, false).unwrap();
+
+    let mut index = storage.load_index().unwrap_or_default();
+    index.active_orbit = Some("active_acc".into());
+    storage.save_index(&index).unwrap();
+
+    let fallback_summary = QuotaSummary {
+        groups: vec![QuotaGroup {
+            display_name: Some("HTTP Fallback Group".into()),
+            description: None,
+            buckets: vec![],
+        }],
+        buckets: vec![],
+        description: None,
+        fetched_at: Some(Utc::now()),
+    };
+
+    struct FallbackQuotaPort(QuotaSummary);
+    impl QuotaPort for FallbackQuotaPort {
+        fn fetch_user_quota(&self, _access_token: &str) -> Result<QuotaSummary> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let quota_port = FallbackQuotaPort(fallback_summary);
+    // MockNativeUsage fails
+    let mock_native = MockNativeUsage::new().with_error("Native agy CLI timed out");
+    let cache_port = FileQuotaCacheAdapter;
+
+    let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_native_usage(&mock_native);
+
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("active_acc".into()),
+            refresh: true,
+        })
+        .unwrap();
+
+    // Verify it silently fell back to HTTP
+    assert_eq!(view_data.summary.groups.len(), 1);
+    assert_eq!(
+        view_data.summary.groups[0].display_name.as_deref(),
+        Some("HTTP Fallback Group")
+    );
+}
+
+#[test]
+fn test_quota_service_never_uses_native_for_non_active_orbit() {
+    let _sandbox = TestSandbox::new();
+    let vault = create_default_vault();
+    let target = TargetAdapter;
+    let storage = FileStorage;
+    let keyring = MockKeyring::default();
+    let lease = MockLeasePort::default();
+
+    // 1. Setup active orbit "active_acc"
+    let active_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFjdGl2ZUBleGFtcGxlLmNvbSJ9.sig","token":{"access_token":"act_tok","token_type":"Bearer","refresh_token":"rf"}}"#;
+    keyring.set_secret(active_secret).unwrap();
+    let snap_service = SnapshotService::new(&target, &keyring, vault.as_ref(), &storage, &lease);
+    snap_service.save("active_acc", None, false).unwrap();
+
+    // 2. Setup non-active orbit "inactive_acc"
+    let inactive_secret = r#"{"auth_method":"consumer","id_token":"eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImluYWN0aXZlQGV4YW1wbGUuY29tIn0.sig","token":{"access_token":"inact_tok","token_type":"Bearer","refresh_token":"rf"}}"#;
+    keyring.set_secret(inactive_secret).unwrap();
+    snap_service.save("inactive_acc", None, false).unwrap();
+
+    // Set active orbit in index back to active_acc
+    keyring.set_secret(active_secret).unwrap();
+    let mut index = storage.load_index().unwrap_or_default();
+    index.active_orbit = Some("active_acc".into());
+    storage.save_index(&index).unwrap();
+
+    let http_summary = QuotaSummary {
+        groups: vec![QuotaGroup {
+            display_name: Some("Non-Active HTTP Group".into()),
+            description: None,
+            buckets: vec![],
+        }],
+        buckets: vec![],
+        description: None,
+        fetched_at: Some(Utc::now()),
+    };
+
+    let native_summary = QuotaSummary {
+        groups: vec![QuotaGroup {
+            display_name: Some("WRONG NATIVE GROUP".into()),
+            description: None,
+            buckets: vec![],
+        }],
+        buckets: vec![],
+        description: None,
+        fetched_at: Some(Utc::now()),
+    };
+
+    struct TestQuotaPort(QuotaSummary);
+    impl QuotaPort for TestQuotaPort {
+        fn fetch_user_quota(&self, _access_token: &str) -> Result<QuotaSummary> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let quota_port = TestQuotaPort(http_summary);
+    let mock_native = MockNativeUsage::new().with_summary(native_summary);
+    let cache_port = FileQuotaCacheAdapter;
+
+    let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
+        .with_keyring(&keyring)
+        .with_vault(vault.as_ref())
+        .with_native_usage(&mock_native);
+
+    // Query INACTIVE orbit
+    let view_data = service
+        .query_quota(QuotaQueryOptions {
+            orbit: Some("inactive_acc".into()),
+            refresh: true,
+        })
+        .unwrap();
+
+    // MUST use HTTP, never Native (which belongs to active_acc)
+    assert_eq!(view_data.summary.groups.len(), 1);
+    assert_eq!(
+        view_data.summary.groups[0].display_name.as_deref(),
+        Some("Non-Active HTTP Group"),
+        "Non-active orbit MUST NOT use native companion (which reflects active credentials)"
     );
 }

@@ -31,4 +31,13 @@ impl QuotaCachePort for FileQuotaCacheAdapter {
         atomic_write(&path, json.as_bytes())?;
         Ok(())
     }
+
+    fn delete_quota_cache(&self, orbit_name: &str) -> Result<()> {
+        let path = get_quota_cache_path(orbit_name)?;
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 }

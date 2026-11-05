@@ -14,7 +14,9 @@ use agy_orbit::infra::keyring::OsKeyring;
 use agy_orbit::infra::lease::KernelFileLock;
 use agy_orbit::infra::oauth::GoogleOAuthAdapter;
 use agy_orbit::infra::probe::UreqProbeAdapter;
-use agy_orbit::infra::quota::{CloudCodeQuotaAdapter, FileQuotaCacheAdapter};
+use agy_orbit::infra::quota::{
+    CloudCodeQuotaAdapter, FileQuotaCacheAdapter, NativeAgyUsageAdapter,
+};
 use agy_orbit::infra::storage::{
     FileStorage, FileUpdateCacheAdapter, MigrationService, TargetAdapter,
 };
@@ -184,11 +186,13 @@ fn run_app() -> Result<()> {
             let quota_port = CloudCodeQuotaAdapter::new();
             let cache_port = FileQuotaCacheAdapter;
             let oauth_adapter = GoogleOAuthAdapter::new();
+            let native_adapter = NativeAgyUsageAdapter::new();
             let service = QuotaService::new(&target, &storage, &quota_port, &cache_port)
                 .with_keyring(&keyring)
                 .with_vault(vault.as_ref())
                 .with_lease(&lease)
-                .with_token_refresh(&oauth_adapter);
+                .with_token_refresh(&oauth_adapter)
+                .with_native_usage(&native_adapter);
 
             if all {
                 let rows = service.query_all_quotas(refresh)?;

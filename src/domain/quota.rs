@@ -154,11 +154,18 @@ impl QuotaBucket {
     /// In Google Cloud Code PA proto3 JSON, a metered model with 0.0 remaining_fraction omits
     /// the scalar `remainingFraction` field while keeping `resetTime`. Thus `None` with `Some(reset_time)`
     /// indicates 0.0% exhausted, whereas `None` with `None` indicates an unmetered internal model (100.0%).
+    ///
+    /// Effective Zero Threshold:
+    /// In Google's WTUS (Weighted Token Usage System), exhausted accounts often retain a negligible
+    /// floating-point residual (e.g. 0.002718 -> 0.27%) that is insufficient to fulfill even a single
+    /// prompt and causes HTTP 429 ResourceExhausted in practice. Official `agy` CLI renders this as `0%`.
+    /// When remaining percentage is < 0.5%, it is truncated to 0.0% to prevent misleading availability hints.
     pub fn remaining_percentage(&self) -> f64 {
         if self.is_disabled() {
             0.0
         } else if let Some(frac) = self.remaining_fraction {
-            (frac * 100.0).clamp(0.0, 100.0)
+            let pct = (frac * 100.0).clamp(0.0, 100.0);
+            if pct < 0.5 { 0.0 } else { pct }
         } else if self.reset_time.is_some() {
             0.0
         } else {
@@ -288,6 +295,92 @@ pub fn default_display_name_for_model(model_id: &str) -> Option<String> {
         "gemini-4-argon-medium" => Some("Gemini 4 Argon (Medium)".to_string()),
         "gemini-4-argon-high" => Some("Gemini 4 Argon (High)".to_string()),
         _ => None,
+    }
+}
+
+/// Parse output from official `agy --print /usage` TSV stream into domain `QuotaSummary`.
+/// Expected line format: `<Group>\t<Bucket>\t<Percentage>%\t<RFC3339_ResetTime>`
+pub fn parse_native_usage_tsv(tsv: &str) -> QuotaSummary {
+    let mut groups_map: BTreeMap<String, Vec<QuotaBucket>> = BTreeMap::new();
+    let mut group_order: Vec<String> = Vec::new();
+    let now = Utc::now();
+
+    for line in tsv.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split('\t').map(str::trim).collect();
+        if cols.len() < 3 {
+            continue;
+        }
+
+        let group_name = cols[0];
+        let bucket_name = cols[1];
+        let pct_str = cols[2].trim_end_matches('%');
+        let remaining_pct = pct_str.parse::<f64>().ok();
+        let reset_time = cols.get(3).and_then(|s| s.parse::<DateTime<Utc>>().ok());
+
+        let window = {
+            let b_lower = bucket_name.to_lowercase();
+            if b_lower.contains("5") || b_lower.contains("five") || b_lower.contains("hour") {
+                Some("5h".to_string())
+            } else if b_lower.contains("week") {
+                Some("weekly".to_string())
+            } else {
+                None
+            }
+        };
+
+        let bucket_id = format!(
+            "{}-{}",
+            group_name.to_lowercase().replace(' ', "-"),
+            window.as_deref().unwrap_or("default")
+        );
+
+        let remaining_fraction = remaining_pct.map(|p| (p / 100.0).clamp(0.0, 1.0));
+
+        let bucket = QuotaBucket {
+            bucket_id,
+            display_name: Some(bucket_name.to_string()),
+            description: None,
+            window,
+            remaining_fraction,
+            remaining_amount: None,
+            disabled: None,
+            reset_time,
+            token_type: Some("WTUS".to_string()),
+            extra: BTreeMap::new(),
+        };
+
+        if !groups_map.contains_key(group_name) {
+            group_order.push(group_name.to_string());
+        }
+        groups_map
+            .entry(group_name.to_string())
+            .or_default()
+            .push(bucket);
+    }
+
+    let mut groups = Vec::with_capacity(group_order.len());
+    let mut all_buckets = Vec::new();
+
+    for g_name in group_order {
+        if let Some(b_list) = groups_map.remove(&g_name) {
+            all_buckets.extend(b_list.clone());
+            groups.push(QuotaGroup {
+                display_name: Some(g_name),
+                description: None,
+                buckets: b_list,
+            });
+        }
+    }
+
+    QuotaSummary {
+        buckets: all_buckets,
+        groups,
+        description: None,
+        fetched_at: Some(now),
     }
 }
 
@@ -559,5 +652,101 @@ mod tests {
         };
         assert!(argon_group.is_argon_group());
         assert!(!argon_group.is_gemini_standard_group());
+    }
+
+    #[test]
+    fn test_parse_native_usage_tsv_mk_standard_4_items() {
+        let tsv = "Gemini Models\tWeekly Limit Remaining\t2%\t2026-11-01T10:36:49Z\n\
+                   Gemini Models\tFive Hour Limit Remaining\t74%\t2026-10-31T18:34:54Z\n\
+                   Claude and GPT models\tWeekly Limit Remaining\t49%\t2026-11-07T16:38:23Z\n\
+                   Claude and GPT models\tFive Hour Limit Remaining\t0%\t2026-10-31T21:38:23Z\n";
+
+        let summary = parse_native_usage_tsv(tsv);
+        assert_eq!(summary.groups.len(), 2);
+
+        let g0 = &summary.groups[0];
+        assert_eq!(g0.display_name.as_deref(), Some("Gemini Models"));
+        assert_eq!(g0.buckets.len(), 2);
+        assert!((g0.buckets[0].remaining_percentage() - 2.0).abs() < 1e-4);
+        assert_eq!(g0.buckets[0].window.as_deref(), Some("weekly"));
+        assert!((g0.buckets[1].remaining_percentage() - 74.0).abs() < 1e-4);
+        assert_eq!(g0.buckets[1].window.as_deref(), Some("5h"));
+
+        let g1 = &summary.groups[1];
+        assert_eq!(g1.display_name.as_deref(), Some("Claude and GPT models"));
+        assert_eq!(g1.buckets.len(), 2);
+        assert!((g1.buckets[0].remaining_percentage() - 49.0).abs() < 1e-4);
+        assert_eq!(g1.buckets[0].window.as_deref(), Some("weekly"));
+        assert!((g1.buckets[1].remaining_percentage() - 0.0).abs() < 1e-4);
+        assert_eq!(g1.buckets[1].window.as_deref(), Some("5h"));
+    }
+
+    #[test]
+    fn test_parse_native_usage_tsv_gio_2_items_no_5h() {
+        let tsv = "Gemini Models\tWeekly Limit Remaining\t0%\t2026-11-05T10:14:42Z\n\
+                   Claude and GPT models\tWeekly Limit Remaining\t0%\t2026-11-07T15:58:34Z\n";
+
+        let summary = parse_native_usage_tsv(tsv);
+        assert_eq!(summary.groups.len(), 2);
+        assert_eq!(summary.groups[0].buckets.len(), 1);
+        assert_eq!(
+            summary.groups[0].buckets[0].window.as_deref(),
+            Some("weekly")
+        );
+        assert_eq!(summary.groups[1].buckets.len(), 1);
+        assert_eq!(
+            summary.groups[1].buckets[0].window.as_deref(),
+            Some("weekly")
+        );
+    }
+
+    #[test]
+    fn test_parse_native_usage_tsv_mc_5_items_with_argon() {
+        let tsv = "Gemini Models\tWeekly Limit Remaining\t0%\t2026-11-02T14:22:33Z\n\
+                   Gemini Models\tFive Hour Limit Remaining\t100%\t2026-10-31T22:12:44Z\n\
+                   Claude and GPT models\tWeekly Limit Remaining\t0%\t2026-11-04T17:01:18Z\n\
+                   Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-10-31T22:12:44Z\n\
+                   Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t0%\t2026-11-04T17:00:40Z\n";
+
+        let summary = parse_native_usage_tsv(tsv);
+        assert_eq!(summary.groups.len(), 3);
+
+        let argon = summary
+            .groups
+            .iter()
+            .find(|g| g.is_argon_group())
+            .expect("Argon group must exist");
+        assert_eq!(argon.display_name.as_deref(), Some("Gemini 4 Argon"));
+        assert_eq!(argon.buckets.len(), 1);
+        assert!(argon.buckets[0].is_argon());
+        assert_eq!(argon.buckets[0].window.as_deref(), Some("weekly"));
+        assert!((argon.buckets[0].remaining_percentage() - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_remaining_percentage_effective_zero_residual_cutoff() {
+        let bucket_with_residual = QuotaBucket {
+            bucket_id: "claude-opus-5-5".into(),
+            display_name: Some("Claude Opus 5.5".into()),
+            description: None,
+            window: Some("weekly".into()),
+            // 0.002718 (0.2718%) is Google WTUS's typical exhausted floating-point residual
+            remaining_fraction: Some(0.002718),
+            remaining_amount: None,
+            disabled: None,
+            reset_time: Some(Utc::now()),
+            token_type: Some("WTUS".into()),
+            extra: Default::default(),
+        };
+
+        // Must truncate to 0.0%
+        assert_eq!(bucket_with_residual.remaining_percentage(), 0.0);
+
+        let bucket_with_real_quota = QuotaBucket {
+            remaining_fraction: Some(0.01), // 1.0%
+            ..bucket_with_residual
+        };
+        // 1.0% remains unchanged
+        assert!((bucket_with_real_quota.remaining_percentage() - 1.0).abs() < 1e-4);
     }
 }

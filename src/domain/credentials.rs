@@ -382,13 +382,19 @@ pub fn resolve_credentials(
                 if !at.is_empty() {
                     let can_use_disk_identity =
                         disk_matches_keyring_rt(token.refresh_token.as_deref());
-                    let effective_id_token = payload.id_token.or_else(|| {
-                        if can_use_disk_identity {
-                            disk_oauth.as_ref().and_then(|d| d.id_token.clone())
-                        } else {
-                            None
-                        }
-                    });
+                    let effective_id_token = payload
+                        .id_token
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| {
+                            if can_use_disk_identity {
+                                disk_oauth
+                                    .as_ref()
+                                    .and_then(|d| d.id_token.clone())
+                                    .filter(|s| !s.trim().is_empty())
+                            } else {
+                                None
+                            }
+                        });
                     let email = effective_id_token
                         .as_deref()
                         .and_then(extract_email_from_jwt)
@@ -417,13 +423,17 @@ pub fn resolve_credentials(
                 if !at.is_empty() {
                     let can_use_disk_identity =
                         disk_matches_keyring_rt(oauth.refresh_token.as_deref());
-                    let effective_id_token = oauth.id_token.or_else(|| {
-                        if can_use_disk_identity {
-                            disk_oauth.as_ref().and_then(|d| d.id_token.clone())
-                        } else {
-                            None
-                        }
-                    });
+                    let effective_id_token =
+                        oauth.id_token.filter(|s| !s.trim().is_empty()).or_else(|| {
+                            if can_use_disk_identity {
+                                disk_oauth
+                                    .as_ref()
+                                    .and_then(|d| d.id_token.clone())
+                                    .filter(|s| !s.trim().is_empty())
+                            } else {
+                                None
+                            }
+                        });
                     let email = effective_id_token
                         .as_deref()
                         .and_then(extract_email_from_jwt)

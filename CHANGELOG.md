@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-06
+
+### Added
+- **ACP User-Agent Protocol Alignment & Native Usage Fallback (`CloudCodeQuotaAdapter` & `NativeAgyUsageAdapter`)**:
+  - Updated `CloudCodeQuotaAdapter` default `User-Agent` to `"antigravity/acp/1.4.12"` (configurable via `AGYO_QUOTA_USER_AGENT`), unlocking authoritative server-side `Gemini Models` and `Gemini 4 Argon` quota groups directly over HTTP (~300ms) for all active and non-active saved orbits without switching OS Keyring credentials.
+  - Fixed `:loadCodeAssist` request metadata (`{"metadata":{"ideType":"ANTIGRAVITY"}}`), eliminating HTTP 400 enum rejection on `"platform":"WINDOWS"`.
+  - Added `NativeAgyUsageAdapter` (`NativeUsagePort`) as a read-only fallback for the currently active orbit (`agy --print /usage`, hardened with a 6-second timeout and process tree termination).
+- **Inline Pool Reset Timers & Family-Aware Status Dashboard (`agyo quota -a`)**:
+  - Embedded compact reset countdowns (e.g. `96.7% (4d 16h)`) directly inside each consumed pool cell (`< 100.0%`), eliminating the ambiguous trailing `Next Reset` column.
+  - Aligned multi-account table column ordering (`Gemini Wk` ➔ `Gemini 5h` ➔ `Argon Wk` ➔ `Claude Wk` ➔ `Claude 5h` ➔ `Status`) with the weekly-first layout of single-account views and `agy /usage`.
+  - Upgraded `Status` (formerly `Health`) evaluation to compute effective model family availability (`min(Weekly, 5h)`), clearly distinguishing `Ready`, partial family availability (`Gemini OK` / `Claude OK`), `Low Quota`, and true `Exhausted` states.
+
+### Fixed
+- **Cross-Client Credential Isolation & Reactive 403 Self-Healing**:
+  - Filtered out empty `id_token` strings (`""`) in `resolve_credentials` and prevented `resolve_orbit_snapshot_identity` from letting open-source Gemini CLI `~/.gemini/oauth_creds.json` files (`client_id` prefix `681255809395`) overwrite official Antigravity Keyring tokens.
+  - Isolated `persist_refreshed_tokens` by matching `refresh_token` before updating `oauth_creds.json` or `sealed_secret`, and added reactive OAuth token refresh on HTTP 403 for official Antigravity credentials to automatically self-heal previously polluted snapshots.
+- **Authoritative Group Isolation & Stale Cache Eviction**:
+  - Prevented top-level `fetchAvailableModels` buckets from polluting metrics or views when an authoritative `retrieveUserQuotaSummary` group (`Gemini Models`, `Claude and GPT models`, or `Gemini 4 Argon`) is already present, eliminating false `Gemini 5h` metrics on weekly-only accounts (e.g. `gio`).
+  - Removed stale cache fallback on HTTP 401, HTTP 403, and `invalid_grant` errors, actively evicting stale cache files via `QuotaCachePort::delete_quota_cache` so failed or unauthorized accounts render `-` instead of stale historical percentages.
+  - Truncated Google WTUS floating-point residual fractions (< 0.5%) to `0.0%`, eliminating deceptive residual metrics (e.g. `0.3%`) on practically exhausted accounts to strictly align with official `agy /usage` (0%).
+  - Fixed single-bucket pool hiding caused by `len() >= 2` guard in `quota_view.rs`, and prioritized `window` metadata over `resetTime` heuristic deltas.
+- **Bottleneck-First Next Reset Priority**:
+  - Overhauled `next_reset` calculation to prioritize depleted and throttled buckets ($\le 20\%$) over near-capacity buckets ($> 20\%$), ensuring the dashboard countdown reflects the true throttling bottleneck rather than an unmetered pool's trivial earlier reset time.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added

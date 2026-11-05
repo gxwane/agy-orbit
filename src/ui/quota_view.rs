@@ -127,12 +127,15 @@ pub fn render_quota_view(data: &QuotaViewData) {
                 .partition(|b| b.is_five_hour_relative(now));
 
             // Render Gemini 5-hour rolling pool
-            if gemini_5h.len() >= 2 {
+            if !gemini_5h.is_empty() {
                 let first = gemini_5h[0];
-                let same_pool = gemini_5h.iter().all(|b| {
-                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
-                        && b.reset_time == first.reset_time
-                });
+                // For a single bucket, same_pool is trivially true.
+                // For multiple buckets, all must share the same pool (within 0.1% pct delta and same reset).
+                let same_pool = gemini_5h.len() == 1
+                    || gemini_5h.iter().all(|b| {
+                        (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                            && b.reset_time == first.reset_time
+                    });
 
                 if same_pool {
                     println!(
@@ -162,12 +165,13 @@ pub fn render_quota_view(data: &QuotaViewData) {
             }
 
             // Render Gemini Weekly pool
-            if gemini_weekly.len() >= 2 {
+            if !gemini_weekly.is_empty() {
                 let first = gemini_weekly[0];
-                let same_pool = gemini_weekly.iter().all(|b| {
-                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
-                        && b.reset_time == first.reset_time
-                });
+                let same_pool = gemini_weekly.len() == 1
+                    || gemini_weekly.iter().all(|b| {
+                        (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                            && b.reset_time == first.reset_time
+                    });
 
                 if same_pool {
                     println!(
@@ -204,12 +208,13 @@ pub fn render_quota_view(data: &QuotaViewData) {
                 .partition(|b| b.is_claude_or_gpt());
             other_buckets = rem;
 
-            if claude_models.len() >= 2 {
+            if !claude_models.is_empty() {
                 let first = claude_models[0];
-                let same_pool = claude_models.iter().all(|b| {
-                    (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
-                        && b.reset_time == first.reset_time
-                });
+                let same_pool = claude_models.len() == 1
+                    || claude_models.iter().all(|b| {
+                        (b.remaining_percentage() - first.remaining_percentage()).abs() < 0.1
+                            && b.reset_time == first.reset_time
+                    });
 
                 if same_pool {
                     println!(
@@ -244,6 +249,9 @@ pub fn render_quota_view(data: &QuotaViewData) {
         let significant_others: Vec<&&QuotaBucket> = other_buckets
             .iter()
             .filter(|b| {
+                if has_gemini_group && b.is_gemini_standard() {
+                    return false;
+                }
                 if has_claude_group && b.is_claude_or_gpt() {
                     return false;
                 }
@@ -318,17 +326,16 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     let mut header_cells = vec![
         Cell::new("Orbit").fg(Color::Cyan),
         Cell::new("Account").fg(Color::Cyan),
-        Cell::new("Gemini 5h").fg(Color::Cyan),
         Cell::new("Gemini Wk").fg(Color::Cyan),
+        Cell::new("Gemini 5h").fg(Color::Cyan),
     ];
     if has_any_argon {
         header_cells.push(Cell::new("Argon Wk").fg(Color::Cyan));
     }
     header_cells.extend(vec![
-        Cell::new("Claude 5h").fg(Color::Cyan),
         Cell::new("Claude Wk").fg(Color::Cyan),
-        Cell::new("Health").fg(Color::Cyan),
-        Cell::new("Next Reset").fg(Color::Cyan),
+        Cell::new("Claude 5h").fg(Color::Cyan),
+        Cell::new("Status").fg(Color::Cyan),
     ]);
 
     let mut table = Table::new();
@@ -353,14 +360,15 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
         let email_str = row.account_email.as_deref().unwrap_or("unknown");
         let email_cell = Cell::new(email_str);
 
-        let g5_cell = format_metric_cell(row.gemini_5h_pct);
-        let gw_cell = format_metric_cell(row.gemini_wk_pct);
-        let c5_cell = format_metric_cell(row.claude_5h_pct);
-        let cw_cell = format_metric_cell(row.claude_wk_pct);
+        let gw_cell = format_metric_cell_with_reset(row.gemini_wk_pct, row.gemini_wk_reset);
+        let g5_cell = format_metric_cell_with_reset(row.gemini_5h_pct, row.gemini_5h_reset);
+        let cw_cell = format_metric_cell_with_reset(row.claude_wk_pct, row.claude_wk_reset);
+        let c5_cell = format_metric_cell_with_reset(row.claude_5h_pct, row.claude_5h_reset);
 
         let (status_str, status_color) = match &row.status {
             RowStatus::Ready => ("Ready", Color::Green),
-            RowStatus::Throttled => ("Throttled", Color::Yellow),
+            RowStatus::Partial(label) => (label.as_str(), Color::Cyan),
+            RowStatus::Throttled => ("Low Quota", Color::Yellow),
             RowStatus::Exhausted => ("Exhausted", Color::Red),
             RowStatus::TokenStale(_) => ("Token Stale", Color::Yellow),
             RowStatus::AuthExpired(_) => ("Auth Expired", Color::Red),
@@ -368,17 +376,14 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
         };
         let status_cell = Cell::new(status_str).fg(status_color);
 
-        let reset_str = match row.next_reset {
-            Some(reset) => format_countdown(reset),
-            None => "-".to_string(),
-        };
-        let reset_cell = Cell::new(reset_str);
-
-        let mut row_cells = vec![orbit_cell, email_cell, g5_cell, gw_cell];
+        let mut row_cells = vec![orbit_cell, email_cell, gw_cell, g5_cell];
         if has_any_argon {
-            row_cells.push(format_metric_cell(row.argon_wk_pct));
+            row_cells.push(format_metric_cell_with_reset(
+                row.argon_wk_pct,
+                row.argon_wk_reset,
+            ));
         }
-        row_cells.extend(vec![c5_cell, cw_cell, status_cell, reset_cell]);
+        row_cells.extend(vec![cw_cell, c5_cell, status_cell]);
 
         table.add_row(Row::from(row_cells));
     }
@@ -440,13 +445,22 @@ pub fn render_multi_quota_table(rows: &[MultiQuotaRowData]) {
     println!();
 }
 
-fn format_metric_cell(metric_opt: Option<MetricState>) -> Cell {
+fn format_metric_cell_with_reset(
+    metric_opt: Option<MetricState>,
+    reset_opt: Option<DateTime<Utc>>,
+) -> Cell {
     match metric_opt {
         Some(MetricState::Disabled) => Cell::new("   DIS")
             .fg(Color::Red)
             .add_attribute(Attribute::Bold),
         Some(MetricState::Available(pct)) => {
-            let s = format!("{:>5.1}%", pct);
+            let s = if pct < 99.95
+                && let Some(reset) = reset_opt
+            {
+                format!("{:>5.1}% ({})", pct, format_compact_countdown(reset))
+            } else {
+                format!("{:>5.1}%", pct)
+            };
             if pct >= 50.0 {
                 Cell::new(s).fg(Color::Green)
             } else if pct >= 20.0 {
@@ -457,6 +471,11 @@ fn format_metric_cell(metric_opt: Option<MetricState>) -> Cell {
         }
         None => Cell::new("     -").fg(Color::DarkGrey),
     }
+}
+
+#[cfg(test)]
+fn format_metric_cell(metric_opt: Option<MetricState>) -> Cell {
+    format_metric_cell_with_reset(metric_opt, None)
 }
 
 fn render_bucket_row(bucket: &QuotaBucket, indent: &str) {
@@ -508,7 +527,7 @@ fn build_progress_bar(percentage: f64, is_disabled: bool) -> String {
     format!("[{}] {:>5.1}%", colored_bar, percentage)
 }
 
-fn format_countdown(reset_time: DateTime<Utc>) -> String {
+fn format_compact_countdown(reset_time: DateTime<Utc>) -> String {
     let now = Utc::now();
     let diff = reset_time - now;
     let total_secs = diff.num_seconds();
@@ -523,13 +542,22 @@ fn format_countdown(reset_time: DateTime<Utc>) -> String {
     if hours >= 24 {
         let days = hours / 24;
         let rem_hours = hours % 24;
-        format!("in {days}d {rem_hours}h")
+        format!("{days}d {rem_hours}h")
     } else if hours > 0 {
-        format!("in {hours}h {minutes}m")
+        format!("{hours}h {minutes}m")
     } else if minutes > 0 {
-        format!("in {minutes}m")
+        format!("{minutes}m")
     } else {
-        format!("in {total_secs}s")
+        format!("{total_secs}s")
+    }
+}
+
+fn format_countdown(reset_time: DateTime<Utc>) -> String {
+    let compact = format_compact_countdown(reset_time);
+    if compact == "now" {
+        compact
+    } else {
+        format!("in {compact}")
     }
 }
 
@@ -616,10 +644,15 @@ mod tests {
             is_active: true,
             is_stale: false,
             gemini_5h_pct: Some(MetricState::Available(100.0)),
+            gemini_5h_reset: None,
             gemini_wk_pct: Some(MetricState::Available(100.0)),
+            gemini_wk_reset: None,
             argon_wk_pct: Some(MetricState::Available(21.97)),
+            argon_wk_reset: None,
             claude_5h_pct: None,
+            claude_5h_reset: None,
             claude_wk_pct: None,
+            claude_wk_reset: None,
             status: RowStatus::Ready,
             next_reset: None,
         }];

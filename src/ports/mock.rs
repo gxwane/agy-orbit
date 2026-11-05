@@ -2,11 +2,13 @@ use crate::domain::credentials::CredentialSnapshot;
 use crate::domain::journal::JournalEntry;
 use crate::domain::lease::LeaseRecord;
 use crate::domain::orbit::{OrbitIndex, OrbitMetadata, OrbitName};
+use crate::domain::quota::QuotaSummary;
 use crate::error::{OrbitError, Result};
 use crate::ports::keyring::KeyringPort;
 use crate::ports::lease::{LeaseGuard, LeasePort};
 use crate::ports::oauth::{RefreshedToken, TokenRefreshPort};
 use crate::ports::probe::{EndpointProbeResult, NetworkProbePort, ProxyConfig};
+use crate::ports::quota::NativeUsagePort;
 use crate::ports::storage::StoragePort;
 use crate::ports::target::TargetPort;
 use crate::ports::vault::VaultPort;
@@ -30,6 +32,57 @@ impl VaultPort for MockVault {
         } else {
             Err(OrbitError::Vault("Invalid mock ciphertext prefix".into()))
         }
+    }
+}
+
+/// Mock Native Usage for in-memory testing.
+#[derive(Default, Clone)]
+pub struct MockNativeUsage {
+    pub available: Arc<Mutex<bool>>,
+    pub summary: Arc<Mutex<Option<QuotaSummary>>>,
+    pub error: Arc<Mutex<Option<String>>>,
+}
+
+impl MockNativeUsage {
+    pub fn new() -> Self {
+        Self {
+            available: Arc::new(Mutex::new(true)),
+            summary: Arc::new(Mutex::new(None)),
+            error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn with_summary(self, summary: QuotaSummary) -> Self {
+        *self.summary.lock().unwrap() = Some(summary);
+        self
+    }
+
+    pub fn with_error(self, err: impl Into<String>) -> Self {
+        *self.error.lock().unwrap() = Some(err.into());
+        self
+    }
+
+    pub fn set_unavailable(&self) {
+        *self.available.lock().unwrap() = false;
+    }
+}
+
+impl NativeUsagePort for MockNativeUsage {
+    fn is_available(&self) -> bool {
+        *self.available.lock().unwrap()
+    }
+
+    fn fetch_active_usage(&self) -> Result<QuotaSummary> {
+        if !self.is_available() {
+            return Err(OrbitError::QuotaHttp("Native CLI agy not available".into()));
+        }
+        if let Some(ref err) = *self.error.lock().unwrap() {
+            return Err(OrbitError::QuotaHttp(err.clone()));
+        }
+        if let Some(ref s) = *self.summary.lock().unwrap() {
+            return Ok(s.clone());
+        }
+        Ok(QuotaSummary::default())
     }
 }
 
